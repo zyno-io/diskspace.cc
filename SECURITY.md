@@ -56,3 +56,8 @@ attacks does not apply. Size metadata is not considered secret from the relay.
 against that release's `checksums.txt` before extracting or running anything. They run the binary
 from a temporary directory that is removed when it exits. If you'd rather not pipe a script into a
 shell, download the archive and checksums from the GitHub release yourself.
+
+Microsoft Defender flags download-and-run PowerShell passed on a command line
+(`powershell -c "irm … | iex"`, as typed into Run or `cmd`) as ClickFix malware and kills it.
+Pasting `irm https://diskspace.cc/run.ps1 | iex` into an open PowerShell window is not flagged
+(tested with Windows 11 and Windows PowerShell 5.1). Keep instructions in that form.

@@ -83,7 +83,7 @@ function detectTab(): Tab {
 
 const COMMANDS: Record<Exclude<Tab, "desktop">, { cmd: string; note: string }> = {
   unix: { cmd: "curl -fsSL https://diskspace.cc/run | sh", note: "Paste into Terminal. Add a path after sh -s -- to scan it straight away." },
-  windows: { cmd: "irm https://diskspace.cc/run.ps1 | iex", note: "Paste into PowerShell. Nothing is installed; the binary is checked against published checksums." },
+  windows: { cmd: "irm https://diskspace.cc/run.ps1 | iex", note: "Open PowerShell and paste it there (Defender blocks it from Run or cmd). Nothing is installed; the binary is checked against published checksums." },
 };
 
 function InstallCard() {

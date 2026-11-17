@@ -465,11 +465,22 @@ func TestShellBootstrapEndToEndDev(t *testing.T) {
 
 // ---- PowerShell ----
 
+// psCommand runs source as a script file, the way a user pasting the one-liner
+// into a PowerShell window is seen. Passing download-and-run code on the
+// command line (-Command) is what Defender's ClickFix detection blocks.
+func psCommand(ctx context.Context, t *testing.T, pwsh, source string) *exec.Cmd {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "bootstrap.ps1")
+	// BOM: Windows PowerShell 5.1 reads BOM-less scripts as ANSI.
+	writeFixture(t, path, append([]byte("\ufeff"), source...))
+	return exec.CommandContext(ctx, pwsh, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", path)
+}
+
 func psRun(t *testing.T, pwsh, platform, prelude, script, suffix, fixture, skipExpected string) (string, string, error) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), 60*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, pwsh, "-NoProfile", "-NonInteractive", "-Command", prelude+strings.TrimRight(script, "\n")+suffix)
+	cmd := psCommand(ctx, t, pwsh, prelude+strings.TrimRight(script, "\n")+suffix)
 	osValue := ""
 	if platform == "windows" {
 		osValue = "Windows_NT"
@@ -488,11 +499,12 @@ var psCases = map[string]bool{
 }
 
 func TestPowerShellBootstrapChecksums(t *testing.T) {
-	requirePwshTests(t)
-	pwsh, err := exec.LookPath("pwsh")
-	if err != nil {
-		t.Skip("PowerShell not installed")
+	for name, pwsh := range powerShells(t) {
+		t.Run(name, func(t *testing.T) { testPowerShellBootstrapChecksums(t, pwsh) })
 	}
+}
+
+func testPowerShellBootstrapChecksums(t *testing.T, pwsh string) {
 	script := prodBootstrap(t).ps
 	archive := fakeArchive(t)
 	digest := fmt.Sprintf("%x", sha256.Sum256(archive))
@@ -537,7 +549,10 @@ function tar { throw 'VERIFIED_EXTRACTION' }
 function Expand-Archive { throw 'VERIFIED_EXTRACTION' }
 `
 				if tc.hashFailure {
-					prelude += "function Get-FileHash { throw 'hash-command-failure' }\n"
+					// Import first: in Windows PowerShell 5.1 Get-FileHash is a
+					// script-module function, and autoloading the module later
+					// would replace the stub.
+					prelude += "Import-Module Microsoft.PowerShell.Utility\nfunction Get-FileHash { throw 'hash-command-failure' }\n"
 				}
 				suffix, skipExpected := "", "0"
 				if tc.skipChecksum {
@@ -559,11 +574,12 @@ function Expand-Archive { throw 'VERIFIED_EXTRACTION' }
 }
 
 func TestPowerShellRunsBinaryWithArgsAndCleansUp(t *testing.T) {
-	requirePwshTests(t)
-	pwsh, err := exec.LookPath("pwsh")
-	if err != nil {
-		t.Skip("PowerShell not installed")
+	for name, pwsh := range powerShells(t) {
+		t.Run(name, func(t *testing.T) { testPowerShellRunsBinaryWithArgsAndCleansUp(t, pwsh) })
 	}
+}
+
+func testPowerShellRunsBinaryWithArgsAndCleansUp(t *testing.T, pwsh string) {
 	asset := "diskspace_windows_" + map[string]string{"arm64": "arm64"}[runtime.GOARCH]
 	if asset == "diskspace_windows_" {
 		asset += "amd64"
@@ -584,8 +600,7 @@ function Invoke-DSFixture { foreach ($v in $args) { [Console]::Out.WriteLine("CL
 	ctx, cancel := context.WithTimeout(t.Context(), 60*time.Second)
 	defer cancel()
 	script := prodBootstrap(t).ps
-	cmd := exec.CommandContext(ctx, pwsh, "-NoProfile", "-NonInteractive", "-Command",
-		prelude+strings.TrimRight(script, "\n")+" '--insecure-skip-checksum' 'argument with spaces' '-format' ''")
+	cmd := psCommand(ctx, t, pwsh, prelude+strings.TrimRight(script, "\n")+" '--insecure-skip-checksum' 'argument with spaces' '-format' ''")
 	cmd.Env = append(os.Environ(), "OS=Windows_NT", "RELEASE_URL="+ghPrefix+"v0.4.0/"+asset)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
@@ -597,11 +612,12 @@ function Invoke-DSFixture { foreach ($v in $args) { [Console]::Out.WriteLine("CL
 }
 
 func TestPowerShellRejectsForeignReleaseURL(t *testing.T) {
-	requirePwshTests(t)
-	pwsh, err := exec.LookPath("pwsh")
-	if err != nil {
-		t.Skip("PowerShell not installed")
+	for name, pwsh := range powerShells(t) {
+		t.Run(name, func(t *testing.T) { testPowerShellRejectsForeignReleaseURL(t, pwsh) })
 	}
+}
+
+func testPowerShellRejectsForeignReleaseURL(t *testing.T, pwsh string) {
 	script := prodBootstrap(t).ps
 	prelude := `function Invoke-WebRequest {
     param($Uri, $OutFile, $TimeoutSec, [switch]$UseBasicParsing)
@@ -648,6 +664,27 @@ func TestDevBinaryDir(t *testing.T) {
 	if rec := get(h, "/dl/linux/amd64"); rec.Code != 302 || rec.Header().Get("Location") != "/devrel/local/diskspace_linux_amd64.tar.gz" {
 		t.Fatalf("redirect: %d %q", rec.Code, rec.Header().Get("Location"))
 	}
+}
+
+// powerShells returns the PowerShell hosts to test: pwsh (7+) and, on Windows,
+// the built-in Windows PowerShell 5.1 that `irm | iex` usually runs in.
+func powerShells(t *testing.T) map[string]string {
+	t.Helper()
+	requirePwshTests(t)
+	names := []string{"pwsh"}
+	if runtime.GOOS == "windows" {
+		names = append(names, "powershell")
+	}
+	found := map[string]string{}
+	for _, n := range names {
+		if p, err := exec.LookPath(n); err == nil {
+			found[n] = p
+		}
+	}
+	if len(found) == 0 {
+		t.Skip("PowerShell not installed")
+	}
+	return found
 }
 
 // requirePwshTests gates the slow PowerShell bootstrap tests (pwsh startup is

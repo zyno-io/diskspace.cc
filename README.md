@@ -13,9 +13,11 @@ curl -fsSL https://diskspace.cc/run | sh -s -- ~/Projects
 ```
 
 ```powershell
-# Windows (PowerShell)
+# Windows: open PowerShell, then paste
 irm https://diskspace.cc/run.ps1 | iex
 ```
+
+On Windows, paste the command into a PowerShell window. Microsoft Defender blocks the same command when it's launched as a one-liner from Run or `cmd` (`powershell -c "irm … | iex"`), because that's how "ClickFix" malware is delivered.
 
 Prefer not to use a terminal? Download the desktop app for [macOS](https://diskspace.cc/dl/gui/mac) or [Windows](https://diskspace.cc/dl/gui/windows).
 
