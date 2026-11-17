@@ -278,9 +278,10 @@ html.lx-web .lx {
   width: 136px;
   height: 136px;
   border-radius: 10px;
-  background: rgba(5, 20, 24, 0.55);
-  color: var(--foam);
-  padding: 6px;
+  /* dark modules on a light tile: inverted codes fail on some phone scanners */
+  background: var(--foam);
+  color: var(--petrol-0);
+  padding: 4px;
 }
 .lx-qr svg {
   display: block;

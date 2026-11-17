@@ -153,7 +153,7 @@ function QR({ url }: { url: string }) {
     );
   return (
     <div class="lx-qr" role="img" aria-label="QR code of the secure link">
-      <svg viewBox={`-1 -1 ${q.size + 2} ${q.size + 2}`} shape-rendering="crispEdges" aria-hidden="true">
+      <svg viewBox={`-2 -2 ${q.size + 4} ${q.size + 4}`} shape-rendering="crispEdges" aria-hidden="true">
         <path d={q.d} fill="currentColor" />
       </svg>
     </div>

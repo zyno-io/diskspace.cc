@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 //
-// QR code as one SVG path (light modules on the petrol plane). Built from the
+// QR code as one SVG path (dark modules on a light tile). Built from the
 // raw module matrix so the launcher controls the look, not the library.
 
 import QRCode from "qrcode";
