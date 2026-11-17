@@ -93,3 +93,25 @@ type Record interface{ isRecord() }
 func (*DirRecord) isRecord()     {}
 func (*FoldRecord) isRecord()    {}
 func (*FoldEndRecord) isRecord() {}
+
+// Volume is a mountable filesystem offered in the scan picker.
+// JSON shape mirrors web/src/protocol/types.ts Volume.
+type Volume struct {
+	Path     string `json:"path"`
+	Label    string `json:"label"`
+	FS       string `json:"fs"`
+	Total    uint64 `json:"total"`
+	Free     uint64 `json:"free"`
+	Used     uint64 `json:"used"`
+	Kind     string `json:"kind"` // boot | internal | external | network
+	ReadOnly bool   `json:"readOnly"`
+}
+
+// DirFilesResult is the full file listing of one directory (DIR_FILES).
+type DirFilesResult struct {
+	Flags        uint64 // dir flags (e.g. DirReadDenied)
+	RestCount    uint64
+	RestAlloc    uint64
+	RestApparent uint64
+	Files        []FileEntry // sorted by Alloc desc, ≤ limit
+}
