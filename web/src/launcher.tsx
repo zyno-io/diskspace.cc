@@ -1,26 +1,37 @@
 // SPDX-License-Identifier: MIT
 //
-// GUI launcher placeholder (the real launcher is built later). Renders the
-// wordmark on the plane so the Wails shell has something branded to show.
+// Desktop app launcher entry (the Wails window's start page). Opened in a
+// normal browser it only explains what it is.
 
 import "@fontsource-variable/anybody/standard.css";
 import "./ui/theme.css";
+import "./launcher/launcher.css";
 import { render } from "preact";
+import { getBridge } from "./launcher/bridge";
+import { Launcher, NotDesktop } from "./launcher/Launcher";
 
-function Launcher() {
-  return (
-    <div class="plane">
-      <div />
-      <main class="plane-main">
-        <p class="status">Starting diskspace…</p>
-      </main>
-      <div class="plane-foot">
-        <div class="wm wm-hero">
-          diskspace<span class="cc">.cc</span>
-        </div>
-      </div>
-    </div>
-  );
+const root = document.getElementById("app")!;
+
+async function boot(): Promise<void> {
+  const bridge = await getBridge();
+  if (!bridge) {
+    document.documentElement.classList.add("lx-web");
+    render(<NotDesktop />, root);
+    return;
+  }
+  document.documentElement.classList.add("lx-desktop");
+  let snap = await bridge.app.State();
+  // A remembered choice (or an app that already runs as administrator) skips
+  // the choice screen, but only on a fresh launch, not when coming back.
+  if (snap.phase === "idle" && (snap.guiElevated || snap.savedChoice)) {
+    try {
+      await bridge.app.Start(snap.guiElevated || snap.savedChoice === "admin", false);
+      snap = await bridge.app.State();
+    } catch {
+      /* already starting: the "agent" event will catch us up */
+    }
+  }
+  render(<Launcher bridge={bridge} initial={snap} />, root);
 }
 
-render(<Launcher />, document.getElementById("app")!);
+void boot();

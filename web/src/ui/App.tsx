@@ -110,6 +110,8 @@ export function ErrorStatus({ kind, message }: { kind: string; message?: string 
       return <Status title="No running diskspace found for this link." body="It may have been closed. Run diskspace again and open the link it prints." />;
     case "missing-key":
       return <Status title="This link is missing its key." body="Open the full link printed by diskspace, including everything after the #. The key stays in your browser and is never sent to the relay." />;
+    case "insecure":
+      return <Status title="This link needs a secure connection." body="Browsers only allow end-to-end encryption on https:// pages or on this computer (127.0.0.1). Open the https link printed by diskspace, or use its local link." />;
     case "unsupported":
       return <Status title="This browser can't open the link." body="diskspace needs a current browser with WebCrypto and WebSockets. Try the latest Chrome, Firefox, Safari or Edge." detail={message} />;
     case "network":

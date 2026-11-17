@@ -65,17 +65,19 @@ function boot(): void {
     const m = /^\/s\/([A-Za-z0-9_-]{8,64})\/?$/.exec(path);
     const sid = m?.[1] ?? "";
     const key = sid ? readKey(sid) : null;
-    if (!sid || !key) {
+    // WebCrypto exists only in secure contexts (https, or http on loopback).
+    const kind = !sid || !key ? "missing-key" : !window.isSecureContext || !crypto?.subtle ? "insecure" : null;
+    if (kind) {
       render(
         <Plane ctl={null} embedded={embedded} breathe={false}>
-          <ErrorStatus kind="missing-key" />
+          <ErrorStatus kind={kind} />
         </Plane>,
         root,
       );
       return;
     }
     const wsUrl = (location.protocol === "https:" ? "wss" : "ws") + "://" + location.host + "/v1/view?sid=" + sid;
-    session = new RealSession({ sid, key, wsUrl });
+    session = new RealSession({ sid, key: key!, wsUrl });
   }
   const ctl = new Controller(session);
   render(<App ctl={ctl} embedded={embedded} />, root);

@@ -102,8 +102,9 @@ export function Results({ ctl, embedded }: { ctl: Controller; embedded: boolean 
         <div class="map" role="region" aria-label="Treemap of disk usage. Click a folder to zoom in, Escape to zoom out.">
           <canvas class="survey" ref={surveyRef} aria-hidden="true" />
           <div class="tm-host" ref={mapRef} />
-          <Meter ctl={ctl} />
         </div>
+        {/* absolute over the map on desktop; in flow between map and list on mobile */}
+        <Meter ctl={ctl} />
         <TreeList ctl={ctl} />
       </div>
     </div>

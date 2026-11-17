@@ -42,6 +42,7 @@ type Renderer struct {
 	linked      bool
 	relayWarned bool
 	scanFiles   uint64
+	lastLink    string // URL+local last printed; relay reconnects re-emit the same link
 }
 
 // New creates a Renderer.
@@ -259,6 +260,14 @@ func FormatBytes(n uint64) string {
 func (r *Renderer) Event(ev session.Event) {
 	switch ev.Kind {
 	case session.EvLinkReady:
+		r.mu.Lock()
+		same := r.lastLink == ev.URL+"\x00"+ev.LocalURL
+		r.lastLink = ev.URL + "\x00" + ev.LocalURL
+		r.mu.Unlock()
+		if same {
+			r.Info("Reconnected to the relay.")
+			return
+		}
 		r.Link(ev.URL, ev.LocalURL)
 	case session.EvRotated:
 		r.Info("Link rotated.")
