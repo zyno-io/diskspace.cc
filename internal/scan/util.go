@@ -62,6 +62,7 @@ type arenaEnt struct {
 	name   string
 	parent uint64 // parent id + 1; 0 = unset
 	ident  Identity
+	flags  uint64 // child flags announced for this dir (nonzero: never scanned)
 }
 
 type arena struct {
@@ -84,11 +85,11 @@ func (a *arena) chunk(id uint64) *[arenaSize]arenaEnt {
 	return p.Load()
 }
 
-func (a *arena) set(id, parent uint64, name string, ident Identity) {
+func (a *arena) set(id, parent uint64, name string, ident Identity, flags uint64) {
 	if id>>arenaBits >= uint64(len(a.chunks)) {
 		return
 	}
-	a.chunk(id)[id&arenaMask] = arenaEnt{name: name, parent: parent + 1, ident: ident}
+	a.chunk(id)[id&arenaMask] = arenaEnt{name: name, parent: parent + 1, ident: ident, flags: flags}
 }
 
 func (a *arena) get(id uint64) (arenaEnt, bool) {

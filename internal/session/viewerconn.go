@@ -351,6 +351,11 @@ func (v *viewerConn) handle(c cmd) {
 		if opts.TopFiles > 64 {
 			opts.TopFiles = 64
 		}
+		// Backpressure: do not start a scan (which attaches SCAN_STARTED) for a
+		// viewer that is not draining its control queue.
+		if !snd.waitRoom(v.ctx) {
+			return
+		}
 		if _, err := a.startScan(opts); err != nil {
 			snd.pushErrorWait(v.ctx, "scan_failed", errMessage(err))
 		}
@@ -428,6 +433,12 @@ func (v *viewerConn) dirFiles(m proto.DirFilesReq) {
 	path, ok := run.scanner.PathOf(m.DirID)
 	if !ok {
 		snd.pushErrorWait(v.ctx, "unknown_dir", "unknown directory id")
+		return
+	}
+	if !run.scanner.DirScanned(m.DirID) {
+		// Announced with child flags (other device, bind mount, reparse point,
+		// duplicate): never scanned, so its identity was never verified.
+		snd.pushErrorWait(v.ctx, "not_scanned", "directory was not scanned")
 		return
 	}
 	want, ok := run.scanner.DirIdentity(m.DirID)

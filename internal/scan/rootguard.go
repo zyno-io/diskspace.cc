@@ -3,15 +3,23 @@
 package scan
 
 import (
-	"os"
 	"path/filepath"
+	"strings"
 )
 
 // RootGuard restricts paths to a directory subtree, resolving symlinks and
 // ".." so that traversal and symlink escapes are rejected.
+//
+// Containment is proven from an OPEN HANDLE: the candidate directory is
+// opened once, its identity is taken from that handle, and containment is
+// established from the same handle (Unix: walking ".." with openat from the
+// handle until the guard root's identity is met; Windows: the handle's final
+// path). A path swapped for a symlink after the open cannot change the
+// verdict, and the returned identity is what later opens are verified against.
 type RootGuard struct {
-	root string
-	fi   os.FileInfo
+	root  string
+	id    Identity // identity of the root, taken from an open handle
+	canon string   // Windows: canonical final path of the root handle
 }
 
 // NewRootGuard builds a guard for root. The root must exist.
@@ -24,11 +32,11 @@ func NewRootGuard(root string) (*RootGuard, error) {
 	if err != nil {
 		return nil, err
 	}
-	fi, err := os.Stat(real)
-	if err != nil {
+	g := &RootGuard{root: real}
+	if err := g.initRoot(real); err != nil {
 		return nil, err
 	}
-	return &RootGuard{root: real, fi: fi}, nil
+	return g, nil
 }
 
 // Root returns the resolved root path.
@@ -50,38 +58,40 @@ func (g *RootGuard) Within(p string) bool {
 }
 
 // WithinResolved is Within that also returns the symlink-resolved path and the
-// identity of the directory it named, so the caller can open resolved with
-// ListSubdirsExpect / Options.ExpectRoot and detect a swap between check and
-// use. A nil guard returns the absolute path and a zero (unchecked) identity.
+// identity of the directory it named, taken from the same open handle that
+// proved containment, so the caller can open resolved with ListSubdirsExpect /
+// Options.ExpectRoot and detect a swap between check and use. A nil guard
+// returns the absolute path and the identity of the opened directory (zero if
+// it cannot be opened, which leaves verification off as before).
 func (g *RootGuard) WithinResolved(p string) (resolved string, id Identity, ok bool) {
 	abs, err := filepath.Abs(p)
 	if err != nil {
 		return "", Identity{}, false
 	}
 	if g == nil {
-		return abs, Identity{}, true
+		id, _ := rootID(abs)
+		return abs, id, true
 	}
-	cur, err := filepath.EvalSymlinks(abs)
+	resolved, err = filepath.EvalSymlinks(abs)
 	if err != nil {
 		return "", Identity{}, false
 	}
-	resolved = cur
-	for {
-		fi, err := os.Stat(cur)
-		if err != nil {
-			return "", Identity{}, false
-		}
-		if os.SameFile(g.fi, fi) {
-			id, err = rootID(resolved)
-			if err != nil {
-				return "", Identity{}, false
-			}
-			return resolved, id, true
-		}
-		parent := filepath.Dir(cur)
-		if parent == cur {
-			return "", Identity{}, false
-		}
-		cur = parent
+	id, ok = g.contained(resolved)
+	if !ok {
+		return "", Identity{}, false
 	}
+	return resolved, id, true
+}
+
+// pathWithin reports whether p equals root or lies beneath it, comparing
+// case-insensitively on a separator boundary.
+func pathWithin(root, p string) bool {
+	root = strings.TrimRight(root, `\/`)
+	if len(p) < len(root) || !strings.EqualFold(p[:len(root)], root) {
+		return false
+	}
+	if len(p) == len(root) {
+		return true
+	}
+	return p[len(root)] == '\\' || p[len(root)] == '/'
 }

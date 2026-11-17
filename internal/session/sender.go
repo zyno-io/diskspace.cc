@@ -52,6 +52,7 @@ type sender struct {
 
 	mu            sync.Mutex
 	ctrl          [][]byte
+	lastAttach    [][]byte // control entries queued by the latest attach (superseded by the next)
 	ctrlBytes     int
 	pongPending   bool
 	overflowed    bool
@@ -133,6 +134,25 @@ func (s *sender) pushWait(ctx context.Context, body []byte) bool {
 	}
 }
 
+// waitRoom blocks until the control queue is below its soft limits (so the
+// reply to a command that is about to be processed is guaranteed room), or
+// ctx ends. It returns false if ctx ended first.
+func (s *sender) waitRoom(ctx context.Context) bool {
+	for {
+		s.mu.Lock()
+		ok := len(s.ctrl) < ctrlSoftEntries && s.ctrlBytes < ctrlSoftBytes
+		s.mu.Unlock()
+		if ok {
+			return true
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-s.room:
+		}
+	}
+}
+
 func (s *sender) pushJSONWait(ctx context.Context, typ byte, v any) {
 	if b, err := proto.EncodeMsg(typ, v); err == nil {
 		s.pushWait(ctx, b)
@@ -157,6 +177,10 @@ func (s *sender) pushError(code, msg string) {
 func (s *sender) bye(reason string) {
 	b, _ := proto.EncodeMsg(proto.MsgBye, proto.Bye{Reason: reason})
 	s.mu.Lock()
+	if s.closeAfter {
+		s.mu.Unlock()
+		return
+	}
 	s.appendCtrlLocked(b)
 	s.closeAfter, s.closeCode, s.closeReason = true, websocket.StatusNormalClosure, reason
 	s.mu.Unlock()
@@ -195,23 +219,58 @@ func (s *sender) attach(run *scanRun, replay bool) {
 	s.mu.Lock()
 	old := s.rd
 	s.rd, s.endSent, s.progress, s.replayPending = rd, false, nil, false
+	// A viewer that never reads and keeps starting scans supersedes its own
+	// not-yet-sent attach messages instead of growing the control queue (the
+	// old log reader is closed below, so the superseded scan's data is never
+	// sent anyway). Order relative to other queued messages is preserved.
+	s.dropLastAttachLocked()
+	var msgs [][]byte
 	if err != nil {
 		b, _ := proto.EncodeMsg(proto.MsgError, proto.Error{Code: proto.ErrCodeReplayUnavailable, Message: "scan history is no longer available; start a new scan"})
-		s.appendCtrlLocked(b)
+		msgs = append(msgs, b)
 		if replay {
-			s.appendCtrlLocked([]byte{proto.MsgReplayDone})
+			msgs = append(msgs, []byte{proto.MsgReplayDone})
 		}
 	} else {
-		s.appendCtrlLocked(run.startedBody)
+		msgs = append(msgs, run.startedBody)
 		if replay {
 			s.replayPending, s.replayUntil = true, run.log.countNow()
 		}
 	}
+	for _, m := range msgs {
+		s.appendCtrlLocked(m)
+	}
+	s.lastAttach = msgs
 	s.mu.Unlock()
 	if old != nil {
 		old.close()
 	}
 	s.poke()
+}
+
+// dropLastAttachLocked removes still-queued entries from the previous attach.
+func (s *sender) dropLastAttachLocked() {
+	if len(s.lastAttach) == 0 {
+		return
+	}
+	kept := s.ctrl[:0]
+	for _, e := range s.ctrl {
+		drop := false
+		for _, a := range s.lastAttach {
+			if len(a) > 0 && len(e) == len(a) && &e[0] == &a[0] {
+				drop = true
+				break
+			}
+		}
+		if drop {
+			s.ctrlBytes -= len(e)
+		} else {
+			kept = append(kept, e)
+		}
+	}
+	clear(s.ctrl[len(kept):])
+	s.ctrl = kept
+	s.lastAttach = nil
 }
 
 func (s *sender) release() {

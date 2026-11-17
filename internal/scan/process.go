@@ -217,7 +217,7 @@ func (w *worker) process(j job) {
 			for i := range w.kids {
 				k := &w.kids[i]
 				rec.Dirs[i] = proto.ChildDir{Name: k.name, Flags: k.flags}
-				s.arena.set(first+uint64(i), j.id, k.name, k.ident)
+				s.arena.set(first+uint64(i), j.id, k.name, k.ident, k.flags)
 			}
 		}
 	}

@@ -172,6 +172,18 @@ func (s *Scanner) DirIdentity(id uint64) (Identity, bool) {
 	return e.ident, true
 }
 
+// DirScanned reports whether announced directory id was actually scanned, i.e.
+// it was announced without child flags (OTHER_DEVICE, BIND_MOUNT, REPARSE,
+// DUP_DIR, ...). Flagged directories were never opened by the scanner, so their
+// recorded identity was never verified against a scan.
+func (s *Scanner) DirScanned(id uint64) bool {
+	if id == 0 {
+		return true
+	}
+	e, ok := s.arena.get(id)
+	return ok && e.flags == 0
+}
+
 // Run scans the tree. emit is called from the calling goroutine only, in
 // parent-before-child order. Run returns after all workers have drained.
 func (s *Scanner) Run(ctx context.Context, emit func(proto.Record)) (Stats, error) {
