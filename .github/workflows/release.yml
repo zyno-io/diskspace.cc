@@ -1,5 +1,19 @@
 # SPDX-License-Identifier: MIT
 # Adapted from github.com/zyno-io/sp2p (MIT)
+#
+# A v* tag builds, signs, notarizes and publishes everything:
+#
+#   preflight ──┬─ release (goreleaser; signs + notarizes darwin CLI)  ──┐
+#               ├─ gui-mac (build, sign, notarize, staple, dmg + zip)   ──┼─ publish-release
+#               └─ gui-windows-build ─ (needs release) sign-windows  ─────┘
+#
+# The GitHub release is created as a draft and published only after every
+# asset, including checksums.txt (uploaded last), is in place. The relay
+# resolver skips drafts, so installs never see a half-uploaded release.
+#
+# Required secrets in the `release` environment (branch main + tags v*):
+#   APPLE_CERTIFICATE_P12, APPLE_CERTIFICATE_PASSWORD, APP_STORE_CONNECT_API_KEY,
+#   AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET
 name: Release
 
 on:
@@ -7,129 +21,423 @@ on:
     tags: ["v*"]
 
 permissions:
-  contents: write
-  packages: write
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  release:
+  # Fail fast, before any build, when signing secrets are missing (for example
+  # in a fork). Nothing in this workflow ever publishes unsigned binaries.
+  preflight:
     runs-on: ubuntu-latest
+    environment: release
     steps:
-      - uses: actions/checkout@v4
+      - name: Require signing secrets
+        env:
+          APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APP_STORE_CONNECT_API_KEY: ${{ secrets.APP_STORE_CONNECT_API_KEY }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+        run: |
+          missing=0
+          for name in APPLE_CERTIFICATE_P12 APPLE_CERTIFICATE_PASSWORD APP_STORE_CONNECT_API_KEY \
+                      AZURE_TENANT_ID AZURE_CLIENT_ID AZURE_CLIENT_SECRET; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Missing required secret $name in the 'release' environment; refusing to build an unsigned release"
+              missing=1
+            fi
+          done
+          exit "$missing"
+
+  release:
+    needs: preflight
+    runs-on: ubuntu-latest
+    environment: release
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-      - uses: actions/setup-go@v5
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
-      - uses: actions/setup-node@v4
+          cache: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: web/package-lock.json
-      - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
+          node-version: 24.x
+          check-latest: true
+          package-manager-cache: false
+
+      # The goreleaser before-hook builds the web SPA (npm ci + build). Docker
+      # and publishing are handled in publish-release, after signing.
+      - uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7.3.0
+        with:
+          version: v2.20.2
+          args: release --clean --skip=publish,docker
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Credentials are written only after goreleaser: its before-hook runs
+      # npm install/build, and no third-party code may run once secrets are on disk.
+      - name: Install rcodesign
+        run: |
+          RCODESIGN_VERSION="0.27.0"
+          curl -fsSL "https://github.com/indygreg/apple-platform-rs/releases/download/apple-codesign%2F${RCODESIGN_VERSION}/apple-codesign-${RCODESIGN_VERSION}-x86_64-unknown-linux-musl.tar.gz" \
+            -o /tmp/rcodesign.tar.gz
+          echo 'a0e0c548b313026abf4f40a6e06554d352c6f4e1add6a87d626c94134a4ee564  /tmp/rcodesign.tar.gz' | sha256sum -c -
+          tar xzf /tmp/rcodesign.tar.gz -C /tmp
+          sudo mv /tmp/apple-codesign-*/rcodesign /usr/local/bin/
+
+      - name: Set up Apple signing credentials
+        env:
+          APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APP_STORE_CONNECT_API_KEY: ${{ secrets.APP_STORE_CONNECT_API_KEY }}
+        run: |
+          umask 077
+          echo "$APPLE_CERTIFICATE_P12" | base64 -d > /tmp/apple-cert.p12
+          printf '%s' "$APPLE_CERTIFICATE_PASSWORD" > /tmp/apple-cert-password
+          echo "$APP_STORE_CONNECT_API_KEY" | base64 -d > /tmp/api-key-raw.json
+          jq -r '.private_key' /tmp/api-key-raw.json > /tmp/apple-api-key.p8
+          rcodesign encode-app-store-connect-api-key \
+            "$(jq -r '.issuer_id' /tmp/api-key-raw.json)" \
+            "$(jq -r '.key_id' /tmp/api-key-raw.json)" \
+            /tmp/apple-api-key.p8 \
+            -o /tmp/app-store-connect-key.json
+          rm /tmp/api-key-raw.json /tmp/apple-api-key.p8
+
+      - name: Sign and notarize macOS CLI binaries
+        env:
+          APPLE_CERTIFICATE_P12_PATH: /tmp/apple-cert.p12
+          APPLE_CERTIFICATE_PASSWORD_PATH: /tmp/apple-cert-password
+          APP_STORE_CONNECT_API_KEY_PATH: /tmp/app-store-connect-key.json
+        run: ./scripts/sign-macos-cli.sh dist
+
+      - name: Upload release artifacts for Windows signing
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-dist-before-windows-signing
+          path: dist/
+          if-no-files-found: error
+          retention-days: 1
+
+  # Universal Diskspace.app: CGO build, so it must run on macOS. Everything
+  # (sign, notarize, staple, dmg, zip) happens here so the dmg and zip are made
+  # from the stapled app.
+  gui-mac:
+    needs: preflight
+    runs-on: macos-latest
+    environment: release
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.x
+          check-latest: true
+          package-manager-cache: false
+
+      - run: npm --prefix web ci && npm --prefix web run build
+
+      # Compile first (npm and Go module code); credentials are written only after.
+      - name: Build app
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: scripts/package-mac.sh build
+
+      - name: Install rcodesign
+        run: |
+          RCODESIGN_VERSION="0.27.0"
+          curl -fsSL "https://github.com/indygreg/apple-platform-rs/releases/download/apple-codesign%2F${RCODESIGN_VERSION}/apple-codesign-${RCODESIGN_VERSION}-macos-universal.tar.gz" \
+            -o "$RUNNER_TEMP/rcodesign.tar.gz"
+          echo '213b9a4b2bf234925a186a25b5167238ddffa23531f6e8e6619b6af09fb3cd5c  '"$RUNNER_TEMP/rcodesign.tar.gz" | shasum -a 256 -c -
+          mkdir -p "$RUNNER_TEMP/rcodesign-bin"
+          tar xzf "$RUNNER_TEMP/rcodesign.tar.gz" -C "$RUNNER_TEMP"
+          mv "$RUNNER_TEMP"/apple-codesign-*/rcodesign "$RUNNER_TEMP/rcodesign-bin/"
+          echo "$RUNNER_TEMP/rcodesign-bin" >> "$GITHUB_PATH"
+
+      - name: Set up Apple signing credentials
+        env:
+          APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APP_STORE_CONNECT_API_KEY: ${{ secrets.APP_STORE_CONNECT_API_KEY }}
+        run: |
+          umask 077
+          echo "$APPLE_CERTIFICATE_P12" | base64 --decode > "$RUNNER_TEMP/apple-cert.p12"
+          printf '%s' "$APPLE_CERTIFICATE_PASSWORD" > "$RUNNER_TEMP/apple-cert-password"
+          echo "$APP_STORE_CONNECT_API_KEY" | base64 --decode > "$RUNNER_TEMP/api-key-raw.json"
+          jq -r '.private_key' "$RUNNER_TEMP/api-key-raw.json" > "$RUNNER_TEMP/apple-api-key.p8"
+          rcodesign encode-app-store-connect-api-key \
+            "$(jq -r '.issuer_id' "$RUNNER_TEMP/api-key-raw.json")" \
+            "$(jq -r '.key_id' "$RUNNER_TEMP/api-key-raw.json")" \
+            "$RUNNER_TEMP/apple-api-key.p8" \
+            -o "$RUNNER_TEMP/app-store-connect-key.json"
+          rm "$RUNNER_TEMP/api-key-raw.json" "$RUNNER_TEMP/apple-api-key.p8"
+
+      - name: Sign, notarize and package
+        env:
+          APPLE_CERTIFICATE_P12_PATH: ${{ runner.temp }}/apple-cert.p12
+          APPLE_CERTIFICATE_PASSWORD_PATH: ${{ runner.temp }}/apple-cert-password
+          APP_STORE_CONNECT_API_KEY_PATH: ${{ runner.temp }}/app-store-connect-key.json
+        run: scripts/package-mac.sh package
+
+      - name: Upload macOS app
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: gui-mac-signed
+          path: |
+            dist/diskspace-desktop_macos_universal.dmg
+            dist/diskspace-desktop_macos_universal.zip
+          if-no-files-found: error
+          retention-days: 1
+
+  # CGO-free cross build; no secrets needed. Signed in sign-windows.
+  gui-windows-build:
+    needs: preflight
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.x
+          check-latest: true
+          package-manager-cache: false
+
+      - run: npm --prefix web ci && npm --prefix web run build
+
+      - name: Build Diskspace.exe
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: scripts/package-win.sh
+
+      - name: Upload unsigned Windows app
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: gui-windows-unsigned
+          path: dist/gui-win-build/
+          if-no-files-found: error
+          retention-days: 1
+
+  sign-windows:
+    needs: [release, gui-windows-build]
+    runs-on: windows-latest
+    environment: release
+    steps:
+      - name: Download release artifacts
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-dist-before-windows-signing
+          path: dist
+
+      - name: Download unsigned Windows app
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: gui-windows-unsigned
+          path: gui-windows
+
+      - name: Stage Windows executables
+        shell: pwsh
+        run: |
+          $signingRoot = Join-Path $env:GITHUB_WORKSPACE "windows-signing"
+          New-Item -ItemType Directory -Force -Path $signingRoot | Out-Null
+          $archives = Get-ChildItem -Path dist -Filter "diskspace_windows_*.zip" -File
+          if ($archives.Count -ne 2) {
+            throw "Expected 2 Windows CLI archives, found $($archives.Count)."
+          }
+          foreach ($archive in $archives) {
+            $destination = Join-Path $signingRoot $archive.BaseName
+            Expand-Archive -Path $archive.FullName -DestinationPath $destination -Force
+          }
+          # Kept under gui/ so names cannot collide with the (case-insensitive)
+          # CLI archive directories.
+          foreach ($arch in "amd64", "arm64") {
+            $source = Join-Path $env:GITHUB_WORKSPACE "gui-windows\$arch\Diskspace.exe"
+            if (-not (Test-Path $source)) { throw "Missing $source" }
+            $destination = Join-Path $signingRoot "gui\$arch"
+            New-Item -ItemType Directory -Force -Path $destination | Out-Null
+            Copy-Item -Path $source -Destination $destination
+          }
+
+      # Same Azure Artifact Signing account and service principal as sp2p.
+      # Requires the release environment secrets AZURE_TENANT_ID,
+      # AZURE_CLIENT_ID and AZURE_CLIENT_SECRET.
+      - name: Sign Windows binaries with Azure Artifact Signing
+        uses: Azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
+        with:
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: https://eus.codesigning.azure.net/
+          signing-account-name: Signal24
+          certificate-profile-name: zc-distribution
+          files-folder: ${{ github.workspace }}\windows-signing
+          files-folder-filter: exe
+          files-folder-recurse: true
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+          cache-dependencies: false
+
+      - name: Verify and repack Windows release artifacts
+        shell: pwsh
+        run: |
+          $signingRoot = Join-Path $env:GITHUB_WORKSPACE "windows-signing"
+          $signedBinaries = Get-ChildItem -Path $signingRoot -Filter "*.exe" -File -Recurse
+          if ($signedBinaries.Count -ne 4) {
+            throw "Expected 4 Windows binaries (CLI + app, amd64 + arm64), found $($signedBinaries.Count)."
+          }
+          foreach ($binary in $signedBinaries) {
+            $signature = Get-AuthenticodeSignature -FilePath $binary.FullName
+            if ($signature.Status -ne "Valid") {
+              throw "Signature verification failed for $($binary.Name): $($signature.Status)"
+            }
+          }
+
+          # CLI archives: same names and contents as goreleaser's, signed exe.
+          $archives = Get-ChildItem -Path dist -Filter "diskspace_windows_*.zip" -File
+          foreach ($archive in $archives) {
+            $source = Join-Path $signingRoot $archive.BaseName
+            Remove-Item -Path $archive.FullName -Force
+            Compress-Archive -Path (Join-Path $source "*") -DestinationPath $archive.FullName -CompressionLevel Optimal
+          }
+          # Desktop app: diskspace-desktop_windows_<arch>.zip containing Diskspace.exe.
+          foreach ($arch in "amd64", "arm64") {
+            $zip = Join-Path $env:GITHUB_WORKSPACE "dist\diskspace-desktop_windows_$arch.zip"
+            Compress-Archive -Path (Join-Path $signingRoot "gui\$arch\Diskspace.exe") -DestinationPath $zip -CompressionLevel Optimal
+          }
+          Remove-Item -Path $signingRoot -Recurse -Force
+
+      - name: Upload signed release artifacts
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-dist-signed
+          path: dist/
+          if-no-files-found: error
+          retention-days: 1
+
+  # Everything below runs only after every artifact is built and signed. The
+  # release is created as a draft, all assets are uploaded, checksums.txt goes
+  # last, and only then is the draft published.
+  publish-release:
+    needs: [release, gui-mac, sign-windows]
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: write
+      packages: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Download signed release artifacts
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-dist-signed
+          path: dist
+
+      - name: Download signed macOS app
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: gui-mac-signed
+          path: dist
+
+      # Regenerated here, after all signing and repacking, over every asset
+      # (goreleaser's own checksums.txt predates signing and is discarded).
+      - name: Checksum final signed artifacts
+        run: ./scripts/checksums.sh dist
+
+      - name: Attest final artifacts and digest manifest
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/*.dmg
+            dist/*.deb
+            dist/*.rpm
+            dist/*.apk
+            dist/checksums.txt
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          mapfile -t ASSETS < <(find dist -maxdepth 1 -type f \( -name '*.tar.gz' -o -name '*.zip' -o -name '*.dmg' -o -name '*.deb' -o -name '*.rpm' -o -name '*.apk' \) | sort)
+          if [ "${#ASSETS[@]}" -eq 0 ] || [ ! -s dist/checksums.txt ]; then
+            echo "No release assets found"
+            exit 1
+          fi
+          # Every asset must be covered by checksums.txt.
+          for a in "${ASSETS[@]}"; do
+            grep -qE "^[0-9a-f]{64}  $(basename "$a")$" dist/checksums.txt || { echo "::error::$a missing from checksums.txt"; exit 1; }
+          done
+          prerelease=()
+          if [[ "$RELEASE_TAG" == *-* ]]; then prerelease=(--prerelease); fi
+
+          if existing=$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft 2>/dev/null); then
+            if [ "$existing" != "true" ]; then
+              echo "::error::Release $RELEASE_TAG is already published; refusing to overwrite live assets. Use a new tag, or convert the release to a draft first, then re-run."
+              exit 1
+            fi
+            # Re-run of an unpublished draft: replace assets in place.
+            gh release upload "$RELEASE_TAG" "${ASSETS[@]}" --clobber
+          else
+            gh release create "$RELEASE_TAG" --draft --verify-tag \
+              --title "$RELEASE_TAG" --generate-notes "${prerelease[@]}" \
+              "${ASSETS[@]}"
+          fi
+          # Manifest last: bootstrap fails closed on a hash mismatch, so it
+          # must never describe files that are not uploaded yet.
+          gh release upload "$RELEASE_TAG" dist/checksums.txt --clobber
+          gh release edit "$RELEASE_TAG" --draft=false "${prerelease[@]}"
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      # The goreleaser before-hook builds the web SPA (npm ci + build).
-      - uses: goreleaser/goreleaser-action@v6
-        with:
-          version: "~> v2"
-          args: release --clean
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  mac-gui:
-    needs: release
-    runs-on: macos-latest
-    env:
-      MACOS_CERT_P12_BASE64: ${{ secrets.MACOS_CERT_P12_BASE64 }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: web/package-lock.json
-      - run: npm --prefix web ci && npm --prefix web run build
-      - name: Import signing certificate
-        if: env.MACOS_CERT_P12_BASE64 != ''
-        env:
-          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
-          MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+      # After the release is published; pushed only for a fully signed release.
+      - name: Build and push relay Docker image
         run: |
-          kc="$RUNNER_TEMP/build.keychain-db"
-          pw="$(uuidgen)"
-          echo "$MACOS_CERT_P12_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
-          security create-keychain -p "$pw" "$kc"
-          security set-keychain-settings -lut 21600 "$kc"
-          security unlock-keychain -p "$pw" "$kc"
-          security import "$RUNNER_TEMP/cert.p12" -P "$MACOS_CERT_PASSWORD" -A -t cert -f pkcs12 -k "$kc"
-          security set-key-partition-list -S apple-tool:,apple: -k "$pw" "$kc"
-          security list-keychains -d user -s "$kc" login.keychain
-          echo "MACOS_SIGN_IDENTITY=$MACOS_SIGN_IDENTITY" >> "$GITHUB_ENV"
-      - name: Package
-        env:
-          VERSION: ${{ github.ref_name }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
-        run: scripts/package-mac.sh
-      - name: Upload to release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          cd dist
-          shasum -a 256 Diskspace_macos_universal.dmg Diskspace_macos_universal.zip > checksums-gui-mac.txt
-          gh release upload "$GITHUB_REF_NAME" Diskspace_macos_universal.dmg Diskspace_macos_universal.zip --clobber --repo "$GITHUB_REPOSITORY"
-          # checksums-gui.txt is shared with the Windows job; merge under a lock-free retry.
-          for i in 1 2 3 4 5; do
-            gh release download "$GITHUB_REF_NAME" --pattern checksums-gui.txt --clobber --repo "$GITHUB_REPOSITORY" 2>/dev/null || : > checksums-gui.txt
-            grep -v 'Diskspace_macos_' checksums-gui.txt > merged.txt || true
-            cat checksums-gui-mac.txt >> merged.txt
-            sort -k2 merged.txt > checksums-gui.txt
-            gh release upload "$GITHUB_REF_NAME" checksums-gui.txt --clobber --repo "$GITHUB_REPOSITORY" && break
-            sleep $((RANDOM % 5 + 1))
-          done
-
-  win-gui:
-    needs: release
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: web/package-lock.json
-      - run: npm --prefix web ci && npm --prefix web run build
-      - name: Package
-        env:
-          VERSION: ${{ github.ref_name }}
-        run: scripts/package-win.sh
-      - name: Upload to release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          cd dist
-          sha256sum Diskspace_windows_amd64.zip Diskspace_windows_arm64.zip > checksums-gui-win.txt
-          gh release upload "$GITHUB_REF_NAME" Diskspace_windows_amd64.zip Diskspace_windows_arm64.zip --clobber --repo "$GITHUB_REPOSITORY"
-          for i in 1 2 3 4 5; do
-            gh release download "$GITHUB_REF_NAME" --pattern checksums-gui.txt --clobber --repo "$GITHUB_REPOSITORY" 2>/dev/null || : > checksums-gui.txt
-            grep -v 'Diskspace_windows_' checksums-gui.txt > merged.txt || true
-            cat checksums-gui-win.txt >> merged.txt
-            sort -k2 merged.txt > checksums-gui.txt
-            gh release upload "$GITHUB_REF_NAME" checksums-gui.txt --clobber --repo "$GITHUB_REPOSITORY" && break
-            sleep $((RANDOM % 5 + 1))
-          done
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          mkdir -p docker-stage/linux/amd64 docker-stage/linux/arm64
+          cp dist/diskspace-relay_linux_amd64_v1/diskspace-relay docker-stage/linux/amd64/
+          cp dist/diskspace-relay_linux_arm64_v8.0/diskspace-relay docker-stage/linux/arm64/
+          # GitHub artifact downloads do not preserve executable modes.
+          chmod +x docker-stage/linux/amd64/diskspace-relay docker-stage/linux/arm64/diskspace-relay
+          tags=(-t "ghcr.io/zyno-io/diskspace-relay:${VERSION}")
+          # Prereleases (v1.2.3-rc1) do not move :latest.
+          if [[ "$VERSION" != *-* ]]; then tags+=(-t ghcr.io/zyno-io/diskspace-relay:latest); fi
+          docker buildx build \
+            --platform linux/amd64,linux/arm64 \
+            --push \
+            "${tags[@]}" \
+            -f Dockerfile.goreleaser \
+            docker-stage

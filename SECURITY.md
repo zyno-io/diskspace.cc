@@ -57,6 +57,22 @@ against that release's `checksums.txt` before extracting or running anything. Th
 from a temporary directory that is removed when it exits. If you'd rather not pipe a script into a
 shell, download the archive and checksums from the GitHub release yourself.
 
+## Release signing
+
+Releases are built and signed by `.github/workflows/release.yml` from a `v*` tag, with secrets held in the
+`release` GitHub environment (restricted to `main` and `v*` tags). The workflow refuses to run without them,
+so unsigned binaries are never published.
+
+- **macOS:** the `diskspace` binaries in the darwin archives are signed (Developer ID, hardened runtime) and
+  notarized with `rcodesign`. A bare binary cannot carry a stapled ticket, so Gatekeeper checks it online.
+  `Diskspace.app` is signed, notarized and stapled; the `diskspace-desktop_macos_universal.{dmg,zip}` are built from the stapled app and the
+  `.dmg` is itself signed, notarized and stapled.
+- **Windows:** `diskspace.exe` and `Diskspace.exe` (amd64, arm64) are Authenticode-signed with Azure Artifact
+  Signing, and each signature is verified before the archives are rebuilt.
+- **Integrity:** `checksums.txt` is generated after all signing, covers every release asset, and is uploaded
+  last. Build provenance is attested with GitHub artifact attestations. The release stays a draft until every
+  asset is uploaded.
+
 Microsoft Defender flags download-and-run PowerShell passed on a command line
 (`powershell -c "irm … | iex"`, as typed into Run or `cmd`) as ClickFix malware and kills it.
 Pasting `irm https://diskspace.cc/run.ps1 | iex` into an open PowerShell window is not flagged

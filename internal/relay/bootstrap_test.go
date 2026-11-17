@@ -185,21 +185,21 @@ func TestDLRoutes(t *testing.T) {
 	b.resolver.cache = map[string]resolvedAsset{}
 	for _, n := range []string{
 		"diskspace_linux_amd64.tar.gz", "diskspace_windows_arm64.zip", "diskspace_amd64.deb",
-		"Diskspace_macos_universal.dmg", "Diskspace_windows_amd64.zip", "Diskspace_windows_arm64.zip", "checksums.txt",
+		"diskspace-desktop_macos_universal.dmg", "diskspace-desktop_windows_amd64.zip", "diskspace-desktop_windows_arm64.zip", "checksums.txt",
 	} {
 		b.resolver.cache[n] = resolvedAsset{url: ghPrefix + "v1.2.3/" + n}
 	}
 	h := routedMux(b)
 	redirects := map[string]string{
-		"/dl/linux/amd64":                   "diskspace_linux_amd64.tar.gz",
-		"/dl/windows/arm64":                 "diskspace_windows_arm64.zip",
-		"/dl/gui/mac":                       "Diskspace_macos_universal.dmg",
-		"/dl/gui/windows":                   "Diskspace_windows_amd64.zip",
-		"/dl/gui/windows/amd64":             "Diskspace_windows_amd64.zip",
-		"/dl/gui/windows/arm64":             "Diskspace_windows_arm64.zip",
-		"/dl/diskspace_amd64.deb":           "diskspace_amd64.deb",
-		"/dl/checksums.txt":                 "checksums.txt",
-		"/dl/Diskspace_macos_universal.dmg": "Diskspace_macos_universal.dmg",
+		"/dl/linux/amd64":                           "diskspace_linux_amd64.tar.gz",
+		"/dl/windows/arm64":                         "diskspace_windows_arm64.zip",
+		"/dl/gui/mac":                               "diskspace-desktop_macos_universal.dmg",
+		"/dl/gui/windows":                           "diskspace-desktop_windows_amd64.zip",
+		"/dl/gui/windows/amd64":                     "diskspace-desktop_windows_amd64.zip",
+		"/dl/gui/windows/arm64":                     "diskspace-desktop_windows_arm64.zip",
+		"/dl/diskspace_amd64.deb":                   "diskspace_amd64.deb",
+		"/dl/checksums.txt":                         "checksums.txt",
+		"/dl/diskspace-desktop_macos_universal.dmg": "diskspace-desktop_macos_universal.dmg",
 	}
 	for path, asset := range redirects {
 		rec := get(h, path)

@@ -99,7 +99,7 @@ Run everything locally without the internet:
 ./diskspace --no-relay ~/Projects      # serves the viewer itself on 127.0.0.1
 ```
 
-Desktop app: `scripts/package-mac.sh` (universal `.app`/`.dmg`) and `scripts/package-win.sh` (Windows `.exe` zip, cross-compiled without CGO).
+Desktop app: `scripts/package-mac.sh` (universal `.app`, `diskspace-desktop_macos_universal.{dmg,zip}`) and `scripts/package-win.sh` (Windows `Diskspace.exe`, cross-compiled without CGO; zipped as `diskspace-desktop_windows_<arch>.zip` by the release workflow).
 
 ### Self-hosting the relay
 
@@ -109,6 +109,17 @@ diskspace --relay https://disk.example.com
 ```
 
 The relay keeps no state beyond in-memory session pairing. Put it behind TLS: browsers allow WebCrypto only on `https://` pages or on `127.0.0.1`. Use `--trust-proxy` when it sits behind a reverse proxy.
+
+## Releases
+
+Pushing a `v*` tag runs `.github/workflows/release.yml`: goreleaser builds the CLI archives, packages and relay
+image; the macOS app is built on a macOS runner; Windows binaries are cross-built. Everything is signed (Apple
+Developer ID + notarization via `rcodesign`, Authenticode via Azure Artifact Signing), `checksums.txt` is
+regenerated over the signed files, and the release is published only after all assets are uploaded. The
+workflow needs the `release` environment secrets `APPLE_CERTIFICATE_P12`, `APPLE_CERTIFICATE_PASSWORD`,
+`APP_STORE_CONNECT_API_KEY`, `AZURE_TENANT_ID`, `AZURE_CLIENT_ID` and `AZURE_CLIENT_SECRET`, and fails
+without them. A tag whose release is already published is rejected (use a new tag, or convert the release back to a draft first). Local builds (`scripts/package-mac.sh`, `scripts/package-win.sh`) require the same credentials
+for macOS; Windows packaging only builds the unsigned `.exe`.
 
 ## Credits
 

@@ -1,11 +1,20 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
 #
-# Builds Diskspace.app (universal), then dist/Diskspace_macos_universal.{dmg,zip}.
-# Requires macOS with Xcode command line tools, Go, and web/dist already built.
-# Optional env: VERSION, MACOS_SIGN_IDENTITY (signing), notary credentials
-# (see notarize-macos.sh).
+# Builds Diskspace.app (universal), then dist/diskspace-desktop_macos_universal.{dmg,zip}.
+# Requires macOS with Xcode command line tools, Go, rcodesign, and web/dist
+# already built. Signs, notarizes and staples the app and the dmg; the zip is
+# made from the stapled app. Env: VERSION, plus the credentials documented in
+# sign-macos.sh and notarize-macos.sh (all required: there is no unsigned mode).
+#
+# Usage: package-mac.sh build     compile and assemble the unsigned app
+#        package-mac.sh package   sign, notarize, staple, make dmg + zip
+# (split so the workflow can keep credentials off disk while third-party
+# build steps run).
 set -euo pipefail
+
+mode="${1:-all}"
+case "$mode" in build | package | all) ;; *) echo "usage: package-mac.sh [build|package]" >&2; exit 2 ;; esac
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
@@ -23,6 +32,8 @@ version="${VERSION:-$(git describe --tags --always --dirty 2>/dev/null || echo d
 version="${version#v}"
 build="$root/dist/mac-build"
 app="$build/Diskspace.app"
+
+if [[ "$mode" != package ]]; then
 rm -rf "$build"
 mkdir -p "$build" "$root/dist"
 
@@ -64,28 +75,38 @@ cat > "$app/Contents/Info.plist" <<PLIST
 </dict>
 </plist>
 PLIST
+fi
+
+if [[ "$mode" == build ]]; then
+  echo "Built unsigned app: $app"
+  exit 0
+fi
+if [[ ! -d "$app" ]]; then
+  echo "error: $app missing; run package-mac.sh build first" >&2
+  exit 1
+fi
 
 "$root/scripts/sign-macos.sh" "$app"
+"$root/scripts/notarize-macos.sh" --staple "$app"
+codesign --verify --deep --strict --verbose=2 "$app"
+xcrun stapler validate "$app"
+spctl --assess --type execute --verbose=2 "$app"
 
-dmg="$root/dist/Diskspace_macos_universal.dmg"
-zip="$root/dist/Diskspace_macos_universal.zip"
+dmg="$root/dist/diskspace-desktop_macos_universal.dmg"
+zip="$root/dist/diskspace-desktop_macos_universal.zip"
 rm -f "$dmg" "$zip"
 
+# Both containers are built from the stapled app.
 stage="$build/dmg"
 mkdir -p "$stage"
 cp -R "$app" "$stage/"
 ln -s /Applications "$stage/Applications"
 hdiutil create -volname Diskspace -srcfolder "$stage" -ov -format UDZO "$dmg"
 "$root/scripts/sign-macos.sh" "$dmg"
-"$root/scripts/notarize-macos.sh" "$dmg"
+"$root/scripts/notarize-macos.sh" --staple "$dmg"
+xcrun stapler validate "$dmg"
 
-# Zip the (stapled when notarized) app. The app inside the dmg was copied
-# before stapling, so also notarize/staple the app itself for the zip.
 ditto -c -k --keepParent "$app" "$zip"
-if "$root/scripts/notarize-macos.sh" "$zip" "$app"; then
-  rm -f "$zip"
-  ditto -c -k --keepParent "$app" "$zip"
-fi
 
 rm -rf "$build"
 echo "Built: $dmg $zip"

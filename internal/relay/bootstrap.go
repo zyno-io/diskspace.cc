@@ -34,8 +34,8 @@ var (
 		`diskspace_(?:linux|darwin|windows)_(?:amd64|arm64)\.(?:tar\.gz|zip)` +
 		`|diskspace-relay_linux_(?:amd64|arm64)\.tar\.gz` +
 		`|diskspace_[a-z0-9_]+\.(?:deb|rpm|apk)` +
-		`|Diskspace_macos_universal\.(?:dmg|zip)` +
-		`|Diskspace_windows_(?:amd64|arm64)\.zip` +
+		`|diskspace-desktop_macos_universal\.(?:dmg|zip)` +
+		`|diskspace-desktop_windows_(?:amd64|arm64)\.zip` +
 		`|checksums(?:-gui)?\.txt)$`)
 )
 
@@ -148,11 +148,11 @@ func (b *Bootstrap) serveDL(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	case len(parts) == 2 && parts[0] == "gui" && parts[1] == "mac":
-		asset = "Diskspace_macos_universal.dmg"
+		asset = "diskspace-desktop_macos_universal.dmg"
 	case len(parts) == 2 && parts[0] == "gui" && parts[1] == "windows":
-		asset = "Diskspace_windows_amd64.zip"
+		asset = "diskspace-desktop_windows_amd64.zip"
 	case len(parts) == 3 && parts[0] == "gui" && parts[1] == "windows" && (parts[2] == "amd64" || parts[2] == "arm64"):
-		asset = "Diskspace_windows_" + parts[2] + ".zip"
+		asset = "diskspace-desktop_windows_" + parts[2] + ".zip"
 	case len(parts) == 2:
 		osName, arch := parts[0], parts[1]
 		if (osName != "linux" && osName != "darwin" && osName != "windows") || (arch != "amd64" && arch != "arm64") {

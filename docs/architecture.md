@@ -46,5 +46,5 @@ diskspace is one Go module with a shared core and three thin shells (CLI, deskto
 ## Release and install
 
 - **Builds:** goreleaser builds static (`CGO_ENABLED=0`) CLI archives for darwin/linux/windows × amd64/arm64, plus `checksums.txt`, the relay archive and image, and deb/rpm/apk packages.
-- **Desktop app:** built by separate jobs. macOS produces a universal `.app` (CGO, `lipo`) packed as `.dmg` and `.zip`, signed and notarized when credentials are present. Windows is cross-compiled without CGO as `.exe` zips.
+- **Desktop app:** built by separate jobs. macOS produces a universal `.app` (CGO, `lipo`), signed, notarized and stapled with `rcodesign`, then packed as `diskspace-desktop_macos_universal.dmg` (also signed/notarized/stapled) and `.zip`. Windows is cross-compiled without CGO as `.exe` zips and Authenticode-signed. Darwin CLI binaries are signed and notarized; `checksums.txt` is regenerated after signing and uploaded last. See `.github/workflows/release.yml`.
 - **Install links:** the relay serves `/run` and `/run.ps1`. Each resolves the newest release that has an asset for the caller's platform, checks the URL prefix, and verifies the archive's SHA-256 before running it.
