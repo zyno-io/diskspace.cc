@@ -38,7 +38,7 @@ export function HostChip({ info, conn, compact = false }: { info: AgentInfo | nu
           Full Disk Access off
           <span class="hint" role="tooltip">
             Mail, Messages, Safari and some app data are protected by macOS and will show as unreadable.
-            <span class="muted">To include them, allow your terminal app in System Settings › Privacy &amp; Security › Full Disk Access, then restart it and run diskspace again.</span>
+            <span class="muted">{info.launcher === "app" ? <>To include them, allow Diskspace in System Settings › Privacy &amp; Security › Full Disk Access, then quit and reopen it.</> : <>To include them, allow your terminal app in System Settings › Privacy &amp; Security › Full Disk Access, then restart it and run diskspace again.</>}</span>
           </span>
         </span>
       )}
@@ -49,7 +49,7 @@ export function HostChip({ info, conn, compact = false }: { info: AgentInfo | nu
           {compact ? <span class="chip-sep" /> : null}
           <span class="code">{code}</span>
           <span class="hint" role="tooltip">
-            {compact && <>Verification code {code}. </>}Matches the code in your terminal. The connection is end-to-end encrypted.
+            {compact && <>Verification code {code}. </>}Matches the code {info?.launcher === "app" ? "in the diskspace app" : "in your terminal"}. The connection is end-to-end encrypted.
             <span class="muted">If the codes differ, close this tab: something is between you and your computer.</span>
           </span>
         </span>

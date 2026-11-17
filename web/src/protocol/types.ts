@@ -60,6 +60,8 @@ export interface AgentInfo {
   invokingUser: string;
   elevated: boolean;
   elevation: "none" | "sudo" | "uac" | "gui-admin" | "native";
+  /** where the user started diskspace; absent from older agents (= cli) */
+  launcher?: "cli" | "app";
   fda: "granted" | "denied" | null;
   root: string | null;
   cwd: { path: string } | null;

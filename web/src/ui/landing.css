@@ -326,8 +326,14 @@
   font-size: 22px;
   line-height: 1;
 }
+.foot-made {
+  margin-left: auto;
+}
 
 @media (max-width: 760px) {
+  .foot-made {
+    margin-left: 0;
+  }
   /* map owns the top of the screen; copy rises out of it */
   .hero-map,
   .hero-grid {

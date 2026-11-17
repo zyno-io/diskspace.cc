@@ -312,6 +312,9 @@ function Landing() {
         <span>
           MIT licensed. Source on <a href="https://github.com/zyno-io/diskspace.cc">GitHub</a>.
         </span>
+        <span class="foot-made">
+          Made by <a href="https://zyno.io">Zyno Consulting</a>
+        </span>
       </footer>
     </>
   );

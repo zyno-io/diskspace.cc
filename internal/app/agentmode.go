@@ -27,7 +27,11 @@ func runAgentMode(o *Options, version string) int {
 	defer conn.Close()
 
 	cfg := sessionConfig(o, version)
+	cfg.Launcher = "app"
 	elevated := elevate.IsElevated()
+	if elevated && o.GUIElevated {
+		cfg.Elevation = "gui-admin" // elevated by the desktop app (osascript / UAC)
+	}
 	fda := cfg.FDA
 	cfg.Events = func(ev session.Event) {
 		if m, ok := eventIPC(ev, elevated, fda); ok {

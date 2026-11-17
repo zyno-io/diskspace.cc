@@ -114,6 +114,10 @@ func (a *App) run(ctx context.Context, gen int, admin bool) {
 	}
 	defer l.Close()
 	args := app.AgentArgs(a.agentOptions(), os.Getpid(), a.relay, l.Addr(), tok)
+	if admin && !elevate.IsElevated() {
+		// right after "agent", before any positional path
+		args = append([]string{args[0], "--gui-elevated"}, args[1:]...)
+	}
 
 	h, err := a.spawn(ctx, a.self, args, admin)
 	if err != nil {

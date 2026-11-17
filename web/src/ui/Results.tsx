@@ -247,7 +247,7 @@ function Meter({ ctl }: { ctl: Controller }) {
               {formatCount(denied)} {denied === 1 ? "folder" : "folders"} couldn't be read{reasons.length ? ` (${reasons.join(", ")})` : ""}
               <span class="hint" role="tooltip">
                 {how}
-                {info?.os === "darwin" && info.fda === "denied" && <span class="muted">For Mail, Messages and Safari data, also allow your terminal app under System Settings › Privacy &amp; Security › Full Disk Access.</span>}
+                {info?.os === "darwin" && info.fda === "denied" && <span class="muted">For Mail, Messages and Safari data, also allow {info.launcher === "app" ? "Diskspace" : "your terminal app"} under System Settings › Privacy &amp; Security › Full Disk Access.</span>}
               </span>
             </span>
           </>

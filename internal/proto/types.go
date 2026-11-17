@@ -89,6 +89,7 @@ type AgentInfo struct {
 	InvokingUser string   `json:"invokingUser"`
 	Elevated     bool     `json:"elevated"`
 	Elevation    string   `json:"elevation"` // none | sudo | uac | gui-admin | native
+	Launcher     string   `json:"launcher"`  // cli | app (where the user sees the verification code)
 	FDA          *string  `json:"fda"`       // granted | denied | null
 	Root         *string  `json:"root"`
 	Cwd          *Cwd     `json:"cwd"`

@@ -70,6 +70,7 @@ type Config struct {
 	Home      string
 	AutoScan  string
 	Elevation string // none | sudo | uac | gui-admin | native
+	Launcher  string // cli | app; empty means cli
 	FDA       string // granted | denied | "" (unknown / not macOS)
 	Version   string
 	Threads   int
@@ -368,8 +369,12 @@ func (a *Agent) buildInfo() proto.AgentInfo {
 		InvokingUser: elevate.InvokingUser(),
 		Elevated:     elevate.IsElevated(),
 		Elevation:    a.cfg.Elevation,
+		Launcher:     a.cfg.Launcher,
 		Home:         home,
 		Volumes:      a.volumes(),
+	}
+	if info.Launcher == "" {
+		info.Launcher = "cli"
 	}
 	if info.Elevation == "" {
 		info.Elevation = "none"

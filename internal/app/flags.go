@@ -22,26 +22,27 @@ const FallbackRelay = "https://diskspace.cc"
 // Options are the parsed command-line options. Path-valued fields are
 // absolute after Resolve.
 type Options struct {
-	Path      string // positional path (autoScan)
-	Relay     string
-	Local     bool
-	NoRelay   bool
-	Root      string
-	Elevate   bool
-	NoElevate bool
-	Cwd       string
-	NoCwd     bool
-	Home      string
-	Open      bool
-	Idle      time.Duration
-	Threads   int
-	ParentPID int
-	ShowVer   bool
-	Quiet     bool
-	IPCAddr   string // agent subcommand
-	IPCToken  string // agent subcommand
-	AgentMode bool
-	idleSet   bool
+	Path        string // positional path (autoScan)
+	Relay       string
+	Local       bool
+	NoRelay     bool
+	Root        string
+	Elevate     bool
+	NoElevate   bool
+	Cwd         string
+	NoCwd       bool
+	Home        string
+	Open        bool
+	Idle        time.Duration
+	Threads     int
+	ParentPID   int
+	ShowVer     bool
+	Quiet       bool
+	IPCAddr     string // agent subcommand
+	IPCToken    string // agent subcommand
+	GUIElevated bool   // agent: the desktop app elevated this process
+	AgentMode   bool
+	idleSet     bool
 }
 
 func newFlagSet(o *Options, defaultRelay string, out io.Writer) *flag.FlagSet {
@@ -67,6 +68,7 @@ func newFlagSet(o *Options, defaultRelay string, out io.Writer) *flag.FlagSet {
 	fs.BoolVar(&o.Quiet, "quiet", false, "print only the link")
 	fs.StringVar(&o.IPCAddr, "ipc", "", "(agent) IPC address")
 	fs.StringVar(&o.IPCToken, "ipc-token-file", "", "(agent) IPC token file")
+	fs.BoolVar(&o.GUIElevated, "gui-elevated", false, "(agent) elevated by the desktop app")
 	fs.Usage = func() {
 		fmt.Fprintf(out, "Usage: diskspace [flags] [path]\n\nShows what is using your disk space in a browser, end-to-end encrypted.\n\nFlags:\n")
 		fs.PrintDefaults()
