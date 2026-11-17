@@ -6,6 +6,7 @@ package relay
 
 import (
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -95,9 +96,10 @@ func NewBootstrap(cfg BootstrapConfig) (*Bootstrap, error) {
 // Routes returns the handlers to mount via Config.Extra.
 func (b *Bootstrap) Routes() map[string]http.Handler {
 	m := map[string]http.Handler{
-		"GET /run":     http.HandlerFunc(b.serveSh),
-		"GET /run.ps1": http.HandlerFunc(b.servePS),
-		"GET /dl/":     http.HandlerFunc(b.serveDL),
+		"GET /run":       http.HandlerFunc(b.serveSh),
+		"GET /run.ps1":   http.HandlerFunc(b.servePS),
+		"GET /dl/":       http.HandlerFunc(b.serveDL),
+		"GET /v1/latest": http.HandlerFunc(b.serveLatest),
 	}
 	if b.devDir != "" {
 		m["GET "+devReleasePath] = http.HandlerFunc(b.serveDev)
@@ -116,6 +118,22 @@ func (b *Bootstrap) Stop() {
 	if b.resolver != nil {
 		b.resolver.Stop()
 	}
+}
+
+// serveLatest answers GET /v1/latest with {"version":"0.1.2"}: the newest
+// stable release (the relay already tracks it for /dl). The version is empty
+// when unknown (dev mode, or GitHub not reached yet). Viewers and agents use it
+// to tell users that an update exists.
+func (b *Bootstrap) serveLatest(w http.ResponseWriter, _ *http.Request) {
+	v := ""
+	if b.devDir == "" && b.resolver != nil {
+		v = b.resolver.LatestVersion("checksums.txt")
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "public, max-age=60")
+	_ = json.NewEncoder(w).Encode(struct {
+		Version string `json:"version"`
+	}{v})
 }
 
 func (b *Bootstrap) serveSh(w http.ResponseWriter, _ *http.Request) { serveScript(w, b.sh) }

@@ -719,3 +719,22 @@ func requirePwshTests(t *testing.T) {
 		t.Skip("set DISKSPACE_PWSH_TESTS=1 to run PowerShell bootstrap tests")
 	}
 }
+
+func TestLatestRoute(t *testing.T) {
+	b := prodBootstrap(t)
+	b.resolver = NewReleaseResolver(DefaultGitHubRepo)
+	b.resolver.fetchedAt = time.Now()
+	b.resolver.cache = map[string]resolvedAsset{"checksums.txt": {url: ghPrefix + "v1.2.3/checksums.txt", version: "1.2.3"}}
+	rec := get(routedMux(b), "/v1/latest")
+	if rec.Code != 200 || strings.TrimSpace(rec.Body.String()) != `{"version":"1.2.3"}` {
+		t.Fatalf("/v1/latest: %d %q", rec.Code, rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+		t.Fatalf("content type %q", ct)
+	}
+	// nothing fetched yet: an empty version, still 200
+	b.resolver.cache = nil
+	if rec := get(routedMux(b), "/v1/latest"); rec.Code != 200 || strings.TrimSpace(rec.Body.String()) != `{"version":""}` {
+		t.Fatalf("/v1/latest cold: %d %q", rec.Code, rec.Body.String())
+	}
+}

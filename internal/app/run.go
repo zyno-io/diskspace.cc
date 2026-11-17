@@ -12,6 +12,8 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"strings"
+	"sync"
 	"syscall"
 
 	"github.com/zyno-io/diskspace.cc/internal/cli"
@@ -19,6 +21,7 @@ import (
 	"github.com/zyno-io/diskspace.cc/internal/ipc"
 	"github.com/zyno-io/diskspace.cc/internal/prio"
 	"github.com/zyno-io/diskspace.cc/internal/session"
+	"github.com/zyno-io/diskspace.cc/internal/update"
 )
 
 // Main runs the program and exits with its status.
@@ -122,8 +125,13 @@ func runCLI(o *Options, version string, stdout, stderr io.Writer) int {
 // serve runs the in-process agent, rendering events with rend.
 func serve(o *Options, cfg session.Config, rend *cli.Renderer, onReady func(ev session.Event)) int {
 	opened := false
+	var checked sync.Once
 	cfg.Events = func(ev session.Event) {
 		rend.Event(ev)
+		if ev.Kind == session.EvLinkReady && ev.URL != "" {
+			// The relay is reachable: tell the user about a newer release. Never blocks startup.
+			checked.Do(func() { go announceUpdate(rend, cfg.RelayURL, cfg.Version) })
+		}
 		if ev.Kind == session.EvLinkReady && o.Open && !opened && !elevate.IsElevated() {
 			opened = true
 			u := ev.URL
@@ -155,6 +163,17 @@ func serve(o *Options, cfg session.Config, rend *cli.Renderer, onReady func(ev s
 		return 1
 	}
 	return 0
+}
+
+// announceUpdate prints one line if the relay knows a newer stable release.
+// Dev builds, an unreachable relay and a short timeout all stay silent.
+func announceUpdate(rend *cli.Renderer, relay, version string) {
+	latest := update.Check(context.Background(), relay, version)
+	if latest == "" {
+		return
+	}
+	rend.Warn(fmt.Sprintf("A newer diskspace is available: v%s (you have v%s). How to update: %s",
+		latest, strings.TrimPrefix(version, "v"), update.InstallURL))
 }
 
 // maybeElevate implements the elevation flow. done=true means the process
