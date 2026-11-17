@@ -26,6 +26,8 @@ func main() {
 	publicURL := flag.String("public-url", "https://diskspace.cc", "public base URL (used for CSP)")
 	dev := flag.Bool("dev", false, "development mode (allow ws://localhost in CSP)")
 	trustProxy := flag.Bool("trust-proxy", false, "trust X-Real-IP / X-Forwarded-For")
+	githubRepo := flag.String("github-repo", relay.DefaultGitHubRepo, "GitHub owner/name that release assets are resolved from")
+	devBinaryDir := flag.String("dev-binary-dir", "", "dev only: serve local release assets (diskspace_<os>_<arch>.tar.gz, ...) from this directory instead of GitHub")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
 	if *showVersion {
@@ -35,8 +37,19 @@ func main() {
 	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
 	slog.SetDefault(log)
 
+	bs, err := relay.NewBootstrap(relay.BootstrapConfig{
+		BaseURL: *publicURL, Repo: *githubRepo, Dev: *dev, DevBinaryDir: *devBinaryDir,
+	})
+	if err != nil {
+		log.Error("bootstrap", "err", err)
+		os.Exit(1)
+	}
+	bs.Start()
+	defer bs.Stop()
+
 	srv := relay.New(relay.Config{
 		Listen: *listen, PublicURL: *publicURL, Dev: *dev, TrustProxy: *trustProxy,
+		Extra:  bs.Routes(),
 		Static: diskspace.WebFS(), Version: version, Logger: log,
 	})
 	hs := &http.Server{

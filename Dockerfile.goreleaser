@@ -1,0 +1,9 @@
+# SPDX-License-Identifier: MIT
+# Adapted from github.com/zyno-io/sp2p (MIT)
+FROM gcr.io/distroless/static-debian12:nonroot
+ARG TARGETPLATFORM
+COPY ${TARGETPLATFORM}/diskspace-relay /usr/local/bin/diskspace-relay
+USER 65532:65532
+EXPOSE 8080
+ENTRYPOINT ["/usr/local/bin/diskspace-relay"]
+CMD ["--listen", ":8080"]

@@ -1,0 +1,135 @@
+# SPDX-License-Identifier: MIT
+# Adapted from github.com/zyno-io/sp2p (MIT)
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      # The goreleaser before-hook builds the web SPA (npm ci + build).
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  mac-gui:
+    needs: release
+    runs-on: macos-latest
+    env:
+      MACOS_CERT_P12_BASE64: ${{ secrets.MACOS_CERT_P12_BASE64 }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm --prefix web ci && npm --prefix web run build
+      - name: Import signing certificate
+        if: env.MACOS_CERT_P12_BASE64 != ''
+        env:
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+        run: |
+          kc="$RUNNER_TEMP/build.keychain-db"
+          pw="$(uuidgen)"
+          echo "$MACOS_CERT_P12_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$pw" "$kc"
+          security set-keychain-settings -lut 21600 "$kc"
+          security unlock-keychain -p "$pw" "$kc"
+          security import "$RUNNER_TEMP/cert.p12" -P "$MACOS_CERT_PASSWORD" -A -t cert -f pkcs12 -k "$kc"
+          security set-key-partition-list -S apple-tool:,apple: -k "$pw" "$kc"
+          security list-keychains -d user -s "$kc" login.keychain
+          echo "MACOS_SIGN_IDENTITY=$MACOS_SIGN_IDENTITY" >> "$GITHUB_ENV"
+      - name: Package
+        env:
+          VERSION: ${{ github.ref_name }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: scripts/package-mac.sh
+      - name: Upload to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd dist
+          shasum -a 256 Diskspace_macos_universal.dmg Diskspace_macos_universal.zip > checksums-gui-mac.txt
+          gh release upload "$GITHUB_REF_NAME" Diskspace_macos_universal.dmg Diskspace_macos_universal.zip --clobber --repo "$GITHUB_REPOSITORY"
+          # checksums-gui.txt is shared with the Windows job; merge under a lock-free retry.
+          for i in 1 2 3 4 5; do
+            gh release download "$GITHUB_REF_NAME" --pattern checksums-gui.txt --clobber --repo "$GITHUB_REPOSITORY" 2>/dev/null || : > checksums-gui.txt
+            grep -v 'Diskspace_macos_' checksums-gui.txt > merged.txt || true
+            cat checksums-gui-mac.txt >> merged.txt
+            sort -k2 merged.txt > checksums-gui.txt
+            gh release upload "$GITHUB_REF_NAME" checksums-gui.txt --clobber --repo "$GITHUB_REPOSITORY" && break
+            sleep $((RANDOM % 5 + 1))
+          done
+
+  win-gui:
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm --prefix web ci && npm --prefix web run build
+      - name: Package
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: scripts/package-win.sh
+      - name: Upload to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd dist
+          sha256sum Diskspace_windows_amd64.zip Diskspace_windows_arm64.zip > checksums-gui-win.txt
+          gh release upload "$GITHUB_REF_NAME" Diskspace_windows_amd64.zip Diskspace_windows_arm64.zip --clobber --repo "$GITHUB_REPOSITORY"
+          for i in 1 2 3 4 5; do
+            gh release download "$GITHUB_REF_NAME" --pattern checksums-gui.txt --clobber --repo "$GITHUB_REPOSITORY" 2>/dev/null || : > checksums-gui.txt
+            grep -v 'Diskspace_windows_' checksums-gui.txt > merged.txt || true
+            cat checksums-gui-win.txt >> merged.txt
+            sort -k2 merged.txt > checksums-gui.txt
+            gh release upload "$GITHUB_REF_NAME" checksums-gui.txt --clobber --repo "$GITHUB_REPOSITORY" && break
+            sleep $((RANDOM % 5 + 1))
+          done
