@@ -119,6 +119,7 @@ function TopBar({ ctl, embedded }: { ctl: Controller; embedded: boolean }) {
   const units = ctl.units.value;
   const scan = ctl.scan.value;
   const prog = ctl.progress.value;
+  const info = ctl.info.value;
   const scanned = phase === "scanning" ? Math.max(prog?.alloc ?? 0, st.root >= 0 ? st.totAlloc[st.root] : 0) : st.root >= 0 ? st.totAlloc[st.root] : 0;
   const volUsed = scan?.volume?.used ?? 0;
   const frac = volUsed > 0 ? Math.min(1, scanned / volUsed) : 0;
@@ -152,6 +153,16 @@ function TopBar({ ctl, embedded }: { ctl: Controller; embedded: boolean }) {
         <Wordmark size="bar" stretch={stretch} label="diskspace.cc" fit={150} />
       </span>
       <nav class="crumbs" aria-label="Zoom path">
+        {info && (
+          <>
+            <span class="host-crumb" title={`Computer: ${info.hostname}`}>
+              {info.hostname}
+            </span>
+            <span class="sep" aria-hidden="true">
+              ›
+            </span>
+          </>
+        )}
         {crumbs.map((n, i) => (
           <>
             {i > 0 && (

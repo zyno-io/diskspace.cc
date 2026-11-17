@@ -74,6 +74,11 @@ func (s *Server) handleViewerPage(w http.ResponseWriter, r *http.Request) {
 	s.serveFile(w, r, "viewer.html", "", true)
 }
 
+// handleDemoPage serves the viewer, which runs an offline mock session at /demo.
+func (s *Server) handleDemoPage(w http.ResponseWriter, r *http.Request) {
+	s.serveFile(w, r, "viewer.html", "", true)
+}
+
 func (s *Server) handleAssets(w http.ResponseWriter, r *http.Request) {
 	name := strings.TrimPrefix(r.URL.Path, "/")
 	if !validRelPath(name) || strings.HasSuffix(name, "/") {

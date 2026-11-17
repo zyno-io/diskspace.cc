@@ -45,8 +45,7 @@ export function HostChip({ info, conn, compact = false }: { info: AgentInfo | nu
       {code && (
         <span class="chip has-hint" tabIndex={0}>
           <Lock />
-          {compact && info ? <b>{info.hostname}</b> : <span>Verification code</span>}
-          {compact ? <span class="chip-sep" /> : null}
+          {!compact && <span>Verification code</span>}
           <span class="code">{code}</span>
           <span class="hint" role="tooltip">
             {compact && <>Verification code {code}. </>}Matches the code {info?.launcher === "app" ? "in the diskspace app" : "in your terminal"}. The connection is end-to-end encrypted.

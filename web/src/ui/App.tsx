@@ -14,6 +14,10 @@ import { Wordmark } from "./Wordmark";
 
 export function App({ ctl, embedded }: { ctl: Controller; embedded: boolean }) {
   const phase = ctl.phase.value;
+  const host = ctl.info.value?.hostname;
+  useEffect(() => {
+    document.title = host ? `${host} – diskspace.cc` : "diskspace.cc";
+  }, [host]);
   if (phase === "scanning" || phase === "done" || phase === "stopped") return <Results ctl={ctl} embedded={embedded} />;
   return (
     <Plane ctl={ctl} embedded={embedded} breathe={phase === "connecting"}>

@@ -17,10 +17,15 @@ const RELAYOUT_MS = 250; // ≤ 4 relayouts/s while streaming
 const STRETCH = ["ultra-condensed", "extra-condensed", "condensed", "semi-condensed", "normal"] as const;
 const WEIGHT = [620, 450] as const;
 const FONT_PX = 12;
-const FAMILY = `"Anybody Variable", "Anybody", sans-serif`;
 const fontKey = (w: number, s: number) => w * STRETCH.length + s;
 const FONTS: string[] = [];
-for (let w = 0; w < WEIGHT.length; w++) for (let s = 0; s < STRETCH.length; s++) FONTS.push(`${WEIGHT[w]} ${STRETCH[s]} ${FONT_PX}px ${FAMILY}`);
+/** canvas labels use the page's data face (--font-data) */
+function initFonts(): void {
+  if (FONTS.length) return;
+  const css = typeof document !== "undefined" ? getComputedStyle(document.documentElement).getPropertyValue("--font-data").trim() : "";
+  const family = css && !css.startsWith("var(") ? css : `"Anybody Variable", "Anybody", sans-serif`;
+  for (let w = 0; w < WEIGHT.length; w++) for (let s = 0; s < STRETCH.length; s++) FONTS.push(`${WEIGHT[w]} ${STRETCH[s]} ${FONT_PX}px ${family}`);
+}
 const DASH = [3, 3];
 const NO_DASH: number[] = [];
 
@@ -113,6 +118,7 @@ export class TreemapView {
   private disposed = false;
 
   constructor(host: HTMLElement, readonly store: TreeStore, readonly o: TreemapOptions) {
+    initFonts();
     this.host = host;
     this.opts = { ...DEFAULT_LAYOUT, ...o.layout };
     this.canvas = document.createElement("canvas");

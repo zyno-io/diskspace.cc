@@ -32,6 +32,28 @@
     linear-gradient(90deg, rgba(13, 42, 49, 0.94) 0%, rgba(13, 42, 49, 0.86) 30%, rgba(13, 42, 49, 0.45) 58%, rgba(13, 42, 49, 0.08) 82%),
     linear-gradient(0deg, rgba(13, 42, 49, 0.92) 0%, rgba(13, 42, 49, 0) 30%);
 }
+.hero-by {
+  position: absolute;
+  top: 18px;
+  right: var(--gutter);
+  z-index: 4;
+  margin: 0;
+  padding: 6px 13px 7px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgba(8, 26, 30, 0.78);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  color: var(--mist);
+  font-size: 14px;
+}
+@media (max-width: 760px) {
+  .hero-by {
+    top: 12px;
+    right: 12px;
+    font-size: 13px;
+  }
+}
 .hero-copy {
   position: relative;
   z-index: 3;

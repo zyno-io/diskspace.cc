@@ -529,7 +529,7 @@ func TestHTTPRoutes(t *testing.T) {
 		return resp
 	}
 	sid := newSID()
-	for _, p := range []string{"/s/" + sid, "/", "/launcher"} {
+	for _, p := range []string{"/s/" + sid, "/demo", "/", "/launcher"} {
 		r := get(p)
 		if r.StatusCode != 200 {
 			t.Fatalf("%s: %d", p, r.StatusCode)

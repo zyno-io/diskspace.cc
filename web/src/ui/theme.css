@@ -22,7 +22,11 @@
   --rose: #d99aae;
   --basalt: #6f93b8;
   --sandstone: #c48d5c;
-  --font: "Anybody Variable", "Anybody", ui-sans-serif, sans-serif;
+  /* Anybody carries the brand (wordmark, headings); --font-data is for the
+     dense parts: file names, sizes, labels, controls. */
+  --font-display: "Anybody Variable", "Anybody", ui-sans-serif, sans-serif;
+  --font-data: var(--font-display);
+  --font: var(--font-data);
   --mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
   --gutter: clamp(16px, 4.4vw, 72px);
   --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
@@ -115,7 +119,7 @@ a:hover {
 /* ---- wordmark ------------------------------------------------------------- */
 
 .wm {
-  font-family: var(--font);
+  font-family: var(--font-display);
   font-weight: 820;
   letter-spacing: -0.02em;
   line-height: 0.78;
@@ -637,6 +641,17 @@ a:hover {
   flex-shrink: 0;
   max-width: 32ch;
 }
+.crumbs .host-crumb {
+  flex: 0 1 auto;
+  min-width: 3em;
+  max-width: 20ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding: 4px 6px;
+  color: var(--foam);
+  font-weight: 650;
+  font-stretch: 100%;
+}
 .crumbs .sep {
   color: rgba(157, 185, 179, 0.45);
   flex: none;
@@ -708,8 +723,10 @@ a:hover {
 }
 
 .stage {
+  --rail-w: 384px;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 384px;
+  /* folder list on the left, map on the right */
+  grid-template-columns: var(--rail-w) minmax(0, 1fr);
   min-height: 0;
   position: relative;
 }
@@ -779,10 +796,10 @@ a:hover {
 
 .meter {
   position: absolute;
-  left: 14px;
+  left: calc(var(--rail-w, 0px) + 14px); /* over the map, right of the list */
   bottom: 14px;
   z-index: 3;
-  max-width: min(760px, calc(100% - 28px));
+  max-width: min(760px, calc(100% - var(--rail-w, 0px) - 28px));
   padding: 9px 13px 10px;
   border-radius: 10px;
   background: rgba(8, 26, 30, 0.8);
@@ -829,7 +846,13 @@ a:hover {
   background: var(--rail);
   backdrop-filter: blur(14px) saturate(1.2);
   -webkit-backdrop-filter: blur(14px) saturate(1.2);
-  border-left: 1px solid var(--line);
+  border-right: 1px solid var(--line);
+  grid-column: 1;
+  grid-row: 1;
+}
+.stage > .map {
+  grid-column: 2;
+  grid-row: 1;
 }
 .rail-head {
   padding: 14px 16px 0 16px;
@@ -1051,7 +1074,7 @@ a:hover {
     display: none;
   }
   .stage {
-    grid-template-columns: minmax(0, 1fr) 340px;
+    --rail-w: 340px;
   }
 }
 @media (min-width: 761px) and (max-width: 960px) {
@@ -1174,4 +1197,11 @@ a:hover {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
   }
+}
+
+/* display face for headings, wherever they are */
+h1,
+h2,
+.pitch {
+  font-family: var(--font-display);
 }

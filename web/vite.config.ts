@@ -12,6 +12,7 @@ const devRoutes = {
     server.middlewares.use((req, _res, next) => {
       const url = req.url ?? "";
       if (/^\/s\/[^/?#]+(\?.*)?$/.test(url)) req.url = "/viewer.html" + (url.includes("?") ? url.slice(url.indexOf("?")) : "");
+      else if (/^\/demo(\?.*)?$/.test(url)) req.url = "/viewer.html" + (url.includes("?") ? url.slice(url.indexOf("?")) : "");
       else if (/^\/launcher(\?.*)?$/.test(url)) req.url = "/launcher.html" + (url.includes("?") ? url.slice(url.indexOf("?")) : "");
       next();
     });

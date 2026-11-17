@@ -237,13 +237,16 @@ function Landing() {
         <canvas class="hero-grid" ref={grid} aria-hidden="true" />
         <div class="hero-map" ref={host} aria-hidden="true" />
         <div class="hero-scrim" aria-hidden="true" />
+        <p class="hero-by">
+          Made by <a href="https://zyno.io">Zyno Consulting</a>
+        </p>
         <div class="hero-copy">
           <Wordmark as="h1" size="hero" stretch={stretch} fit={150} />
           <p class="pitch">See what's filling your disk, from any browser.</p>
           <p class="sub">End-to-end encrypted; the relay never sees your file names.</p>
           <InstallCard />
           <p class="demo">
-            <a href="/s/demo?demo">Try the demo</a> with a made-up Mac, no install needed.
+            <a href="/demo">Try the demo</a> with a made-up Mac, no install needed.
           </p>
         </div>
       </section>

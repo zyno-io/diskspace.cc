@@ -85,6 +85,7 @@ func New(cfg Config) *Server {
 		_, _ = w.Write([]byte(cfg.Version + "\n"))
 	})
 	s.mux.HandleFunc("GET /s/{sid}", s.handleViewerPage)
+	s.mux.HandleFunc("GET /demo", s.handleDemoPage)
 	s.mux.HandleFunc("GET /assets/", s.handleAssets)
 	for p, h := range cfg.Extra {
 		s.mux.Handle(p, h)
