@@ -1,0 +1,11 @@
+/bin/
+/dist/
+/web/node_modules/
+/web/dist/*
+!/web/dist/.gitkeep
+/gui/build/bin/
+*.test
+*.prof
+.DS_Store
+/web/test-results/
+/web/playwright-report/
