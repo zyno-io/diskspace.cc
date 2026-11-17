@@ -360,6 +360,22 @@ func TestSymlinkLoop(t *testing.T) {
 	if r.dirs != 3 {
 		t.Fatalf("symlink followed? dirs=%d", r.dirs)
 	}
+	if runtime.GOOS == "windows" {
+		// Directory symlinks are directory entries on Windows: they are
+		// announced as REPARSE children and never descended.
+		n := 0
+		for _, rec := range r.dirRecs {
+			for _, c := range rec.Dirs {
+				if c.Flags&proto.ChildReparse != 0 {
+					n++
+				}
+			}
+		}
+		if n != 2 || r.files != 0 {
+			t.Fatalf("want 2 REPARSE children and 0 files, got %d and %d", n, r.files)
+		}
+		return
+	}
 	if r.files != 2 {
 		t.Fatalf("symlinks should count as files, got %d", r.files)
 	}
