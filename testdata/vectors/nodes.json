@@ -1,0 +1,132 @@
+{
+ "nodes": [
+  {
+   "name": "empty",
+   "body": "110100",
+   "scanId": 1,
+   "records": null
+  },
+  {
+   "name": "mixed",
+   "body": "110305010010802064030103010375737200036d6e74010d68c3a96c6c6f20e4b896e7958c0603076269672e69736f80808080802085808080802004016101010009626164fffe6e616d6580400720010100ffffffffffffff0fffffffffffffff0f808080802000000001020f00000000018080808020017800000201808080808001808080808002b960630301",
+   "scanId": 3,
+   "records": [
+    {
+     "k": 1,
+     "flags": 16,
+     "ownAlloc": 4096,
+     "ownApparent": 100,
+     "ownFiles": 3,
+     "entryErrors": 1,
+     "firstChildId": 1,
+     "dirs": [
+      {
+       "hex": "757372",
+       "flags": 0
+      },
+      {
+       "hex": "6d6e74",
+       "flags": 1
+      },
+      {
+       "hex": "68c3a96c6c6f20e4b896e7958c",
+       "flags": 6
+      }
+     ],
+     "files": [
+      {
+       "hex": "6269672e69736f",
+       "alloc": 1099511627776,
+       "apparent": 1099511627781,
+       "flags": 4
+      },
+      {
+       "hex": "61",
+       "alloc": 1,
+       "apparent": 1,
+       "flags": 0
+      },
+      {
+       "hex": "626164fffe6e616d65",
+       "alloc": 8192,
+       "apparent": 7,
+       "flags": 32
+      }
+     ]
+    },
+    {
+     "k": 1,
+     "id": 1,
+     "ownAlloc": 9007199254740991,
+     "ownApparent": 9007199254740991,
+     "ownFiles": 8589934592
+    },
+    {
+     "k": 1,
+     "id": 2,
+     "flags": 15,
+     "firstChildId": 8589934592,
+     "dirs": [
+      {
+       "hex": "78",
+       "flags": 0
+      }
+     ]
+    },
+    {
+     "k": 2,
+     "targetId": 1,
+     "alloc": 34359738368,
+     "apparent": 68719476736,
+     "filesN": 12345,
+     "dirsN": 99
+    },
+    {
+     "k": 3,
+     "targetId": 1
+    }
+   ]
+  },
+  {
+   "name": "bigScanId",
+   "body": "119180808080200103ffffffffffffff0f",
+   "scanId": 1099511627793,
+   "records": [
+    {
+     "k": 3,
+     "targetId": 9007199254740991
+    }
+   ]
+  }
+ ],
+ "dirFiles": {
+  "body": "1509028080808020018080808040050603016209080005626164c32801012009e697a5e69cace8aa9e80808080802080808080804008",
+  "reqId": 9,
+  "scanId": 2,
+  "dirId": 8589934592,
+  "flags": 1,
+  "restCount": 17179869184,
+  "restAlloc": 5,
+  "restApparent": 6,
+  "files": [
+   {
+    "hex": "62",
+    "alloc": 9,
+    "apparent": 8,
+    "flags": 0
+   },
+   {
+    "hex": "626164c328",
+    "alloc": 1,
+    "apparent": 1,
+    "flags": 32
+   },
+   {
+    "hex": "e697a5e69cace8aa9e",
+    "alloc": 1099511627776,
+    "apparent": 2199023255552,
+    "flags": 8
+   }
+  ]
+ }
+}
