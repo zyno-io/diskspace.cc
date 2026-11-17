@@ -4,6 +4,7 @@
 // normal browser it only explains what it is.
 
 import "@fontsource-variable/anybody/standard.css";
+import "@fontsource-variable/instrument-sans/standard.css";
 import "./ui/theme.css";
 import "./launcher/launcher.css";
 import { render } from "preact";

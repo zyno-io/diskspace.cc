@@ -5,6 +5,7 @@
 // lingers in history or gets copied along with the address bar.
 
 import "@fontsource-variable/anybody/standard.css";
+import "@fontsource-variable/instrument-sans/standard.css";
 import "./ui/theme.css";
 import { render } from "preact";
 import { MockSession } from "./protocol/mock";

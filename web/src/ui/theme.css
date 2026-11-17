@@ -25,7 +25,7 @@
   /* Anybody carries the brand (wordmark, headings); --font-data is for the
      dense parts: file names, sizes, labels, controls. */
   --font-display: "Anybody Variable", "Anybody", ui-sans-serif, sans-serif;
-  --font-data: var(--font-display);
+  --font-data: "Instrument Sans Variable", "Instrument Sans", ui-sans-serif, sans-serif;
   --font: var(--font-data);
   --mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
   --gutter: clamp(16px, 4.4vw, 72px);

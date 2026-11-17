@@ -4,6 +4,7 @@
 // the survey grid behind it and the stretching wordmark over a petrol scrim.
 
 import "@fontsource-variable/anybody/standard.css";
+import "@fontsource-variable/instrument-sans/standard.css";
 import "./ui/theme.css";
 import "./ui/landing.css";
 import { render } from "preact";
