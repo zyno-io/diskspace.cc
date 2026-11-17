@@ -24,6 +24,7 @@ type Limits struct {
 	ViewerConnsPerMinSess int
 	MaxPendingViewers     int
 	MaxSplicedPairs       int
+	MaxSessions           int // global cap on live sessions
 
 	PendingTimeout time.Duration
 	PingInterval   time.Duration
@@ -43,8 +44,9 @@ func DefaultLimits() Limits {
 		UpgradesPerMinPerIP:   60,
 		SessionsPerIP:         8,
 		ViewerConnsPerMinSess: 30,
-		MaxPendingViewers:     4,
-		MaxSplicedPairs:       2,
+		MaxPendingViewers:     8,
+		MaxSplicedPairs:       6,
+		MaxSessions:           10000,
 		PendingTimeout:        10 * time.Second,
 		PingInterval:          20 * time.Second,
 		Grace:                 60 * time.Second,
@@ -79,6 +81,9 @@ func (l Limits) withDefaults() Limits {
 	}
 	if l.MaxSplicedPairs > 0 {
 		d.MaxSplicedPairs = l.MaxSplicedPairs
+	}
+	if l.MaxSessions > 0 {
+		d.MaxSessions = l.MaxSessions
 	}
 	if l.PendingTimeout > 0 {
 		d.PendingTimeout = l.PendingTimeout
@@ -188,23 +193,34 @@ func (b *bucket) wait(ctx context.Context, n int) error {
 	}
 }
 
-// clientIP extracts the client address. With trustProxy it prefers X-Real-IP,
-// then the last X-Forwarded-For entry (the one appended by our own proxy).
+// clientIP extracts the rate-limit key for the client. With trustProxy it uses
+// only the last X-Forwarded-For entry (the one appended by our own proxy);
+// client-controlled headers such as X-Real-IP are ignored. IPv4 is keyed per
+// /32 and IPv6 per /64.
 func clientIP(r *http.Request, trustProxy bool) string {
 	if trustProxy {
-		if v := strings.TrimSpace(r.Header.Get("X-Real-IP")); net.ParseIP(v) != nil {
-			return v
-		}
 		if v := r.Header.Get("X-Forwarded-For"); v != "" {
 			parts := strings.Split(v, ",")
 			if last := strings.TrimSpace(parts[len(parts)-1]); net.ParseIP(last) != nil {
-				return last
+				return ipKey(last)
 			}
 		}
 	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
-		return r.RemoteAddr
+		return ipKey(r.RemoteAddr)
 	}
-	return host
+	return ipKey(host)
+}
+
+// ipKey normalizes an address string to its limiter key (IPv6 -> /64).
+func ipKey(s string) string {
+	ip := net.ParseIP(s)
+	if ip == nil {
+		return s
+	}
+	if v4 := ip.To4(); v4 != nil {
+		return v4.String()
+	}
+	return ip.Mask(net.CIDRMask(64, 128)).String() + "/64"
 }

@@ -149,6 +149,17 @@ describe("ViewerConnection against a simulated agent", () => {
     await until(() => t.states().filter((s) => s === "connected").length === 2);
   });
 
+  it("4429 and 1013 are retryable, not fatal", async () => {
+    for (const code of [4429, 1013]) {
+      const t = setup();
+      t.conn.connect();
+      t.sockets[0].drop(code);
+      await until(() => t.sockets.length === 2);
+      expect(t.states()).toContain("reconnecting");
+      expect(t.states()).not.toContain("error");
+    }
+  });
+
   it("maps close codes", async () => {
     for (const [code, kind] of [[4401, "key-mismatch"], [4404, "no-session"], [4400, "unsupported"], [4402, "protocol"]] as const) {
       const t = setup();

@@ -7,9 +7,9 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/zyno-io/diskspace.cc/internal/browser"
 	"io"
 	"os"
-	"os/exec"
 	"os/signal"
 	"runtime"
 	"syscall"
@@ -141,6 +141,7 @@ func serve(o *Options, cfg session.Config, rend *cli.Renderer, onReady func(ev s
 	if o.ParentPID > 0 {
 		go elevate.WatchParent(ctx, o.ParentPID, stop)
 	}
+	defer browser.Cleanup()
 	rend.Header()
 	err = a.Run(ctx)
 	rend.Close()
@@ -189,22 +190,14 @@ func maybeElevate(o *Options, self string, stderr io.Writer) (code int, done boo
 	return 0, false // unreachable on success
 }
 
+// openBrowser opens url via a private redirect file so the link (which holds
+// the session key) never appears in a process command line.
 func openBrowser(url string) {
 	if url == "" {
 		return
 	}
-	var cmd *exec.Cmd
-	switch runtime.GOOS {
-	case "darwin":
-		cmd = exec.Command("open", url)
-	case "windows":
-		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
-	default:
-		cmd = exec.Command("xdg-open", url)
-	}
-	_ = cmd.Start()
-	if cmd.Process != nil {
-		go cmd.Wait()
+	if err := browser.Open(url); err != nil {
+		fmt.Fprintln(os.Stderr, "diskspace: could not open browser:", err)
 	}
 }
 

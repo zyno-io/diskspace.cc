@@ -33,7 +33,7 @@ export interface ConnectionOptions {
   timing?: Partial<typeof DEFAULT_TIMING>;
 }
 
-const DEFAULT_TIMING = { handshakeMs: 10_000, pingMs: 20_000, idleMs: 60_000, backoffBaseMs: 500, backoffMaxMs: 15_000 };
+const DEFAULT_TIMING = { handshakeMs: 10_000, pingMs: 20_000, idleMs: 60_000, backoffBaseMs: 500, backoffMaxMs: 8_000 };
 const CREDIT_FLUSH = 1 << 20;
 
 type Phase = "idle" | "await-m2" | "active";
@@ -278,6 +278,9 @@ export class ViewerConnection {
       case 1000:
         this.terminal = true;
         return this.state({ s: "closed", reason: "agent closed the connection" });
+      case 4429: // relay rate/viewer cap: transient, retry with backoff
+      case 1013: // try again later (agent offline / not answering)
+        return this.dropped();
       default:
         if (code >= 4400 && code < 4500) return fatal("protocol", `Relay refused the connection (${code})`);
         this.dropped();

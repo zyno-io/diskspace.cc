@@ -352,7 +352,7 @@ func TestPendingTimeout(t *testing.T) {
 }
 
 func TestTwoViewersAndPairCap(t *testing.T) {
-	e := newEnv(t, Limits{})
+	e := newEnv(t, Limits{MaxSplicedPairs: 2})
 	sid, tok := newSID(), "tok"
 	ctl, _ := e.register(sid, tok)
 	v1, d1, _ := e.pair(sid, tok, ctl)
@@ -400,9 +400,62 @@ func TestTrustProxyIP(t *testing.T) {
 	if got := clientIP(r, true); got != "1.2.3.4" {
 		t.Fatal(got)
 	}
+	// client-supplied X-Real-IP must be ignored
 	r.Header.Set("X-Real-IP", "9.9.9.9")
-	if got := clientIP(r, true); got != "9.9.9.9" {
+	if got := clientIP(r, true); got != "1.2.3.4" {
 		t.Fatal(got)
+	}
+}
+
+func TestClientIPKeying(t *testing.T) {
+	r := httptest.NewRequest("GET", "/", nil)
+	r.RemoteAddr = "10.0.0.1:1234"
+	r.Header.Set("X-Forwarded-For", "1.1.1.1, 2001:db8:1:2:aaaa:bbbb:cccc:dddd")
+	a := clientIP(r, true)
+	r.Header.Set("X-Forwarded-For", "2001:db8:1:2:1111:2222:3333:4444")
+	if b := clientIP(r, true); a != b {
+		t.Fatalf("same /64 must share a key: %q vs %q", a, b)
+	}
+	r.Header.Set("X-Forwarded-For", "2001:db8:1:3::1")
+	if b := clientIP(r, true); a == b {
+		t.Fatalf("different /64 must differ: %q", b)
+	}
+	r.RemoteAddr = "[2001:db8:9:9:1::1]:99"
+	c := clientIP(r, false)
+	r.RemoteAddr = "[2001:db8:9:9:2::2]:99"
+	if d := clientIP(r, false); c != d {
+		t.Fatalf("remote addr /64: %q vs %q", c, d)
+	}
+}
+
+func TestMaxSessionsCap(t *testing.T) {
+	e := newEnv(t, Limits{MaxSessions: 2, SessionsPerIP: 100})
+	e.register(newSID(), "a")
+	e.register(newSID(), "a")
+	c := e.dial("/v1/agent?sid="+newSID(), "a")
+	expectClose(t, c, CloseRateLimit)
+}
+
+func TestDefaultLimits(t *testing.T) {
+	l := Limits{}.withDefaults()
+	if l.MaxSplicedPairs < 6 || l.MaxPendingViewers < 8 || l.MaxSessions != 10000 {
+		t.Fatalf("%+v", l)
+	}
+}
+
+// sid-only sockets (no handshake) must not lock out a real viewer.
+func TestIdleViewersDoNotLockOut(t *testing.T) {
+	e := newEnv(t, Limits{})
+	sid, tok := newSID(), "tok"
+	ctl, _ := e.register(sid, tok)
+	for i := 0; i < 2; i++ {
+		e.pair(sid, tok, ctl)
+	}
+	v, d, _ := e.pair(sid, tok, ctl)
+	msg := randBytes(10)
+	_ = v.Write(ctxT(), websocket.MessageBinary, msg)
+	if _, got, err := d.Read(ctxT()); err != nil || !bytes.Equal(got, msg) {
+		t.Fatalf("third pair refused: %v", err)
 	}
 }
 

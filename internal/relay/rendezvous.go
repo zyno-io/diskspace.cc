@@ -171,6 +171,11 @@ func (s *Server) handleAgent(w http.ResponseWriter, r *http.Request) {
 		}
 		sess.mu.Unlock()
 	} else {
+		if len(s.sessions) >= s.lim.MaxSessions {
+			s.mu.Unlock()
+			closeConn(conn, CloseRateLimit, "relay full")
+			return
+		}
 		if s.ipSessions[ip] >= s.lim.SessionsPerIP {
 			s.mu.Unlock()
 			closeConn(conn, CloseRateLimit, "too many sessions")
