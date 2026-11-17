@@ -288,29 +288,42 @@ html.lx-web .lx {
   height: 100%;
 }
 .lx-qr-empty {
-  display: grid;
-  place-items: center;
-  border: 1px dashed var(--line-2);
-  background: transparent;
+  position: relative;
+  padding: 0;
+}
+/* the three finder squares, breathing, until the real code arrives */
+.lx-qr-empty span,
+.lx-qr-empty::before,
+.lx-qr-empty::after {
+  content: "";
+  position: absolute;
+  width: 30px;
+  height: 30px;
+  border: 5px solid rgba(157, 185, 179, 0.5);
+  border-radius: 3px;
+  animation: lx-breathe 2.4s ease-in-out infinite;
+}
+.lx-qr-empty::before {
+  left: 12px;
+  top: 12px;
+}
+.lx-qr-empty::after {
+  right: 12px;
+  top: 12px;
+  animation-delay: 0.3s;
 }
 .lx-qr-empty span {
-  width: 44%;
-  height: 44%;
-  border-radius: 6px;
-  background:
-    linear-gradient(90deg, transparent 0 48%, rgba(62, 116, 112, 0.7) 48% 52%, transparent 52%),
-    linear-gradient(0deg, transparent 0 48%, rgba(62, 116, 112, 0.7) 48% 52%, transparent 52%);
-  animation: lx-breathe 2.4s ease-in-out infinite;
+  left: 12px;
+  bottom: 12px;
+  animation-delay: 0.6s;
 }
 @keyframes lx-breathe {
   0%,
   100% {
-    opacity: 0.35;
-    transform: scale(0.92);
+    opacity: 0.3;
   }
   50% {
     opacity: 1;
-    transform: scale(1);
   }
 }
 
@@ -318,19 +331,20 @@ html.lx-web .lx {
   min-width: 0;
 }
 .lx-state-title {
-  display: flex;
-  align-items: center;
+  display: grid;
+  grid-template-columns: 9px minmax(0, 1fr);
+  align-items: start;
   gap: 9px;
   font-weight: 700;
-  font-stretch: 108%;
-  font-size: 19px;
-  line-height: 1.2;
+  font-stretch: 90%;
+  font-size: 18px;
+  line-height: 22px;
 }
 .lx-dot {
   position: relative;
-  flex: none;
   width: 9px;
   height: 9px;
+  margin-top: 7px;
   border-radius: 50%;
   background: var(--sodium);
 }
@@ -460,6 +474,12 @@ html.lx-web .lx {
 .lx-grow {
   flex: 1;
 }
+.lx-actions .btn-primary[disabled] {
+  opacity: 1;
+  background: rgba(243, 183, 63, 0.14);
+  border-color: transparent;
+  color: rgba(243, 183, 63, 0.55);
+}
 .lx-actions .btn-quiet {
   padding: 0 10px;
 }
@@ -507,6 +527,22 @@ html.lx-web .lx {
   font-size: 13px;
 }
 
+/* opened in a normal browser: full-size plane like the viewer's */
+html.lx-web .lx-main {
+  max-width: 640px;
+  padding-left: var(--gutter);
+  padding-right: var(--gutter);
+}
+html.lx-web .lx-foot {
+  padding-left: calc(var(--gutter) - 0.06em);
+}
+html.lx-web .lx-foot .wm-hero {
+  font-size: clamp(56px, 13vw, 220px);
+}
+.lx-status .btn {
+  text-decoration: none;
+}
+
 @media (max-height: 640px) {
   .lx-foot {
     display: none;
@@ -515,6 +551,8 @@ html.lx-web .lx {
 
 @media (prefers-reduced-motion: reduce) {
   .lx-qr-empty span,
+  .lx-qr-empty::before,
+  .lx-qr-empty::after,
   .lx-dot::after {
     animation: none !important;
   }

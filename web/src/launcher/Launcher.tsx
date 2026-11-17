@@ -14,8 +14,6 @@ import { Wordmark } from "../ui/Wordmark";
 import { type Bridge, displayLink, type Snapshot } from "./bridge";
 import { qrPath } from "./qr";
 
-const OS_NAME: Record<string, string> = { darwin: "macOS", windows: "Windows" };
-
 /** survey-grid plane with the wordmark bleeding off the bottom edge */
 function Shell({ top, children, breathe, foot = true }: { top?: ComponentChildren; children: ComponentChildren; breathe: boolean; foot?: boolean }) {
   const ref = useRef<HTMLCanvasElement>(null);
@@ -43,6 +41,7 @@ function Shell({ top, children, breathe, foot = true }: { top?: ComponentChildre
 function ChoiceScreen({ snap, bridge }: { snap: Snapshot; bridge: Bridge }) {
   const [remember, setRemember] = useState(snap.savedChoice !== "");
   const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
   const cancelled = snap.phase === "cancelled";
   const choose = async (admin: boolean) => {
     if (busy) return;
@@ -50,6 +49,9 @@ function ChoiceScreen({ snap, bridge }: { snap: Snapshot; bridge: Bridge }) {
     try {
       if (!remember && snap.savedChoice) await bridge.app.Forget();
       await bridge.app.Start(admin, remember);
+      setErr("");
+    } catch (e) {
+      setErr(String(e));
     } finally {
       setBusy(false);
     }
@@ -88,6 +90,11 @@ function ChoiceScreen({ snap, bridge }: { snap: Snapshot; bridge: Bridge }) {
         </span>
         Remember my choice
       </label>
+      {err && (
+        <p class="lx-warn" role="alert">
+          {err}
+        </p>
+      )}
     </Shell>
   );
 }
@@ -122,7 +129,7 @@ function ErrorScreen({ snap, bridge }: { snap: Snapshot; bridge: Bridge }) {
         <h1>diskspace stopped.</h1>
         <p>{snap.message || "Something went wrong starting the scanner."}</p>
         <div class="lx-row">
-          <button class="btn btn-primary" onClick={() => bridge.app.Start(snap.admin, false)}>
+          <button class="btn btn-primary" onClick={() => bridge.app.Start(snap.admin, false).catch(() => bridge.app.Reset())}>
             Try again
           </button>
           <button class="btn" onClick={() => bridge.app.Reset()}>
@@ -193,7 +200,7 @@ function Status({ snap }: { snap: Snapshot }) {
     title = "Scanning";
     body = (
       <span class="lx-path" title={snap.scanPath}>
-        {snap.scanPath}
+        <bdi>{snap.scanPath}</bdi>
       </span>
     );
   } else if (snap.scan === "done") {
@@ -232,8 +239,13 @@ function Status({ snap }: { snap: Snapshot }) {
   );
 }
 
+/** the agent reports its rights with the link; until then trust the request */
+function isAdmin(snap: Snapshot): boolean {
+  return snap.elevated || snap.guiElevated || (snap.admin && !snap.url && !snap.localUrl);
+}
+
 function ElevationChip({ snap }: { snap: Snapshot }) {
-  const admin = snap.elevated || snap.guiElevated;
+  const admin = isAdmin(snap);
   const hint = admin
     ? "diskspace runs as administrator. Every folder on this computer can be read, including other users' folders."
     : `diskspace runs as ${snap.user} without administrator rights. Other users' folders and some system areas will show as unreadable.`;
@@ -269,7 +281,8 @@ function RunningScreen({ snap, bridge }: { snap: Snapshot; bridge: Bridge }) {
   const [err, setErr] = useState("");
   const link = snap.url || snap.localUrl;
   const shown = displayLink(link);
-  const admin = snap.elevated || snap.guiElevated;
+  const admin = isAdmin(snap);
+  const [restarting, setRestarting] = useState(false);
   const canToggle = !snap.guiElevated && (snap.os === "darwin" || snap.os === "windows");
   const fda = snap.os === "darwin" && snap.fda === "denied";
   const run = (p: Promise<unknown>) => p.then(() => setErr("")).catch((e) => setErr(String(e)));
@@ -288,7 +301,14 @@ function RunningScreen({ snap, bridge }: { snap: Snapshot; bridge: Bridge }) {
         <>
           <ElevationChip snap={snap} />
           {canToggle && (
-            <button class="btn btn-quiet lx-nodrag lx-restart" onClick={() => run(bridge.app.Restart(!admin))}>
+            <button
+              class="btn btn-quiet lx-nodrag lx-restart"
+              disabled={restarting}
+              onClick={() => {
+                setRestarting(true);
+                run(bridge.app.Restart(!admin)).finally(() => setRestarting(false));
+              }}
+            >
               {admin ? "Restart without admin" : "Restart with admin"}
             </button>
           )}
@@ -358,6 +378,8 @@ export function Launcher({ bridge, initial }: { bridge: Bridge; initial: Snapsho
       setSnap(s);
     };
     const off = bridge.runtime.EventsOn("agent", (d) => take(d as Snapshot));
+    // events emitted between boot()'s State() and this subscription are lost
+    bridge.app.State().then(take);
     // coming back from the in-app viewer (bfcache or reload): resync + shrink
     const onShow = () => {
       bridge.app.LauncherShown();
@@ -388,9 +410,10 @@ export function NotDesktop() {
     <Shell breathe={false}>
       <section class="status lx-status">
         <h1>This page is the desktop app's launcher.</h1>
-        <p>
-          It only works inside Diskspace for {OS_NAME.darwin} and {OS_NAME.windows}. <a href="/">Go to diskspace.cc</a>
-        </p>
+        <p>It only works inside the Diskspace app for macOS and Windows.</p>
+        <a class="btn" href="/">
+          Go to diskspace.cc
+        </a>
       </section>
     </Shell>
   );
