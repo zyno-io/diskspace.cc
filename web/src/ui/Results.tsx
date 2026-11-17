@@ -125,7 +125,10 @@ function TopBar({ ctl, embedded }: { ctl: Controller; embedded: boolean }) {
 
   const stretch = useCallback(() => {
     const s = ctl.scan.peek();
-    const used = s?.volume?.used ?? 0;
+    // Progress against the volume only means something when the whole
+    // volume is being scanned; a folder scan breathes, then settles.
+    const wholeVolume = !!s && (ctl.info.peek()?.volumes ?? []).some((v) => v.path === s.path);
+    const used = wholeVolume ? (s?.volume?.used ?? 0) : 0;
     const p = ctl.progress.peek();
     const store = ctl.store;
     const bytes = Math.max(p?.alloc ?? 0, store.root >= 0 ? store.totAlloc[store.root] : 0);

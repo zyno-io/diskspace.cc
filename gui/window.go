@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	goruntime "runtime"
 
 	"github.com/wailsapp/wails/v2"
@@ -70,6 +71,7 @@ func runGUI() error {
 			Theme:                windows.Dark,
 			DisablePinchZoom:     true,
 			IsZoomControlEnabled: false,
+			WebviewUserDataPath:  webviewDataDir(),
 		},
 	}
 	if goruntime.GOOS == "darwin" {
@@ -93,4 +95,17 @@ func (a *App) wailsCtx() context.Context {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.ctx
+}
+
+// webviewDataDir keeps the WebView2 profile in Local AppData under a stable
+// name; Wails' default is Roaming AppData named after the .exe file.
+func webviewDataDir() string {
+	if goruntime.GOOS != "windows" {
+		return ""
+	}
+	base, err := os.UserCacheDir() // %LocalAppData% on Windows
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(base, "diskspace.cc", "WebView2")
 }

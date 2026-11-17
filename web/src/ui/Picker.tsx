@@ -130,7 +130,7 @@ function Browse({ ctl, start, onCancel }: { ctl: Controller; start: string; onCa
       <nav class="crumbs-browse" aria-label="Folder path">
         {crumbs.map((c, i) => (
           <>
-            {i > 1 && <span class="sep">/</span>}
+            {i > 0 && !(i === 1 && crumbs[0].label === "/") && <span class="sep">{cur.includes("\\") ? "\\" : "/"}</span>}
             <button key={c.path} onClick={() => setPath(c.path)} aria-current={i === crumbs.length - 1 ? "location" : undefined}>
               {c.label}
             </button>

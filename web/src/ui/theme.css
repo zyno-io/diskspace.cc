@@ -1036,6 +1036,30 @@ a:hover {
 
 /* ---- mobile ---------------------------------------------------------------- */
 
+/* Narrow desktop windows (e.g. the desktop app's default size): keep the
+   bar on one line by shrinking the mark and dropping the host name. */
+@media (min-width: 761px) and (max-width: 1240px) {
+  .topbar {
+    gap: 12px;
+    padding-left: 14px;
+  }
+  .wm-slot {
+    width: 150px;
+  }
+  .topbar .chips .chip b,
+  .topbar .chips .chip-sep {
+    display: none;
+  }
+  .stage {
+    grid-template-columns: minmax(0, 1fr) 340px;
+  }
+}
+@media (min-width: 761px) and (max-width: 960px) {
+  .topbar .chips {
+    display: none; /* as on phones; the code is still on the start screen */
+  }
+}
+
 @media (max-width: 760px) {
   .plane-top {
     padding-top: 14px;
