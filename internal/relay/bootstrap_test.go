@@ -473,7 +473,31 @@ func psCommand(ctx context.Context, t *testing.T, pwsh, source string) *exec.Cmd
 	path := filepath.Join(t.TempDir(), "bootstrap.ps1")
 	// BOM: Windows PowerShell 5.1 reads BOM-less scripts as ANSI.
 	writeFixture(t, path, append([]byte("\ufeff"), source...))
-	return exec.CommandContext(ctx, pwsh, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", path)
+	cmd := exec.CommandContext(ctx, pwsh, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", path)
+	if filepath.Base(strings.ToLower(pwsh)) == "powershell.exe" {
+		// Started from PowerShell 7 (as on CI), 5.1 inherits a PSModulePath
+		// it can't load its own modules from (Get-FileHash goes missing).
+		cmd.Env = withoutEnv(os.Environ(), "PSModulePath")
+	}
+	return cmd
+}
+
+// envOf is the environment cmd will run with.
+func envOf(cmd *exec.Cmd) []string {
+	if cmd.Env != nil {
+		return cmd.Env
+	}
+	return os.Environ()
+}
+
+func withoutEnv(env []string, name string) []string {
+	out := env[:0:0]
+	for _, kv := range env {
+		if k, _, _ := strings.Cut(kv, "="); !strings.EqualFold(k, name) {
+			out = append(out, kv)
+		}
+	}
+	return out
 }
 
 func psRun(t *testing.T, pwsh, platform, prelude, script, suffix, fixture, skipExpected string) (string, string, error) {
@@ -485,7 +509,7 @@ func psRun(t *testing.T, pwsh, platform, prelude, script, suffix, fixture, skipE
 	if platform == "windows" {
 		osValue = "Windows_NT"
 	}
-	cmd.Env = append(os.Environ(), "OS="+osValue, "FIXTURE="+fixture, "EXPECT_SKIP_CHECKSUM="+skipExpected)
+	cmd.Env = append(envOf(cmd), "OS="+osValue, "FIXTURE="+fixture, "EXPECT_SKIP_CHECKSUM="+skipExpected)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	stdout, err := cmd.Output()
@@ -601,7 +625,7 @@ function Invoke-DSFixture { foreach ($v in $args) { [Console]::Out.WriteLine("CL
 	defer cancel()
 	script := prodBootstrap(t).ps
 	cmd := psCommand(ctx, t, pwsh, prelude+strings.TrimRight(script, "\n")+" '--insecure-skip-checksum' 'argument with spaces' '-format' ''")
-	cmd.Env = append(os.Environ(), "OS=Windows_NT", "RELEASE_URL="+ghPrefix+"v0.4.0/"+asset)
+	cmd.Env = append(envOf(cmd), "OS=Windows_NT", "RELEASE_URL="+ghPrefix+"v0.4.0/"+asset)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()

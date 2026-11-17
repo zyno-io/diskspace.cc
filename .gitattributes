@@ -1,0 +1,7 @@
+# Byte-exact fixtures (test vectors, scripts) must not get CRLF on Windows.
+* text=auto eol=lf
+*.png binary
+*.ico binary
+*.icns binary
+*.syso binary
+*.woff2 binary
