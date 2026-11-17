@@ -1,0 +1,24 @@
+diskspace.cc
+Copyright (c) 2026 Signal24 LLC dba Zyno Consulting
+Licensed under the MIT License (see LICENSE).
+
+Portions of this software are adapted from sp2p
+(https://github.com/zyno-io/sp2p), Copyright (c) 2025 Signal24 LLC dba
+Zyno Consulting, licensed under the MIT License. Adapted files carry an
+"Adapted from github.com/zyno-io/sp2p (MIT)" comment, including:
+
+  internal/session/crypto/handshake.go, internal/session/crypto/frame.go
+  internal/relay/*.go (server, rendezvous, splice, limits, static,
+    bootstrap, releases)
+  web/src/protocol/crypto.ts, web/src/protocol/zstream.ts
+  .goreleaser.yaml, .github/workflows/release.yml,
+  scripts/sign-macos.sh, scripts/notarize-macos.sh
+
+Third-party components are used under their own licenses, including:
+  Wails (MIT), coder/websocket (ISC), klauspost/compress (BSD-3-Clause / MIT),
+  mdp/qrterminal (MIT), golang.org/x/* (BSD-3-Clause), Preact (MIT),
+  @preact/signals (MIT), fzstd (MIT), @noble/curves (MIT), qrcode (MIT),
+  Anybody typeface via @fontsource-variable/anybody (SIL Open Font License 1.1).
+
+The product idea was inspired by SquirrelDisk (AGPL-3.0); no SquirrelDisk
+code is used.
