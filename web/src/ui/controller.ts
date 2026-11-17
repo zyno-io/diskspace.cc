@@ -61,7 +61,7 @@ export class Controller {
     this.ingest = new IngestScheduler(
       {
         applySlice: (b, from, deadline) => this.store.applySlice(b, from, deadline),
-        batchDone: (b) => this.session.applied(b.wireBytes),
+        batchDone: (b) => this.session.applied(b.wireBytes, b.gen),
         done: (m) => this.onDone(m),
         ended: (m) => this.onEnded(m),
         replayDone: () => this.flush(),
@@ -149,7 +149,9 @@ export class Controller {
   // ---- internals --------------------------------------------------------------
 
   private onScanStarted(m: ScanStarted): void {
-    this.ingest.discard((b) => b.scanId !== m.scanId);
+    // Anything still queued is obsolete: a new scan, or a reconnect replaying this
+    // scan from the start (same scanId) into the reset store.
+    this.ingest.discardAll();
     this.store.reset(m);
     batch(() => {
       this.scan.value = m;

@@ -37,10 +37,18 @@ func iopolicy(cmd int, a *iopolicyArgs) error {
 
 // applyProcessLow: nice 10 plus utility I/O tier. PRIO_DARWIN_BG is avoided on
 // purpose (pins to efficiency cores and throttles the network).
+// Only ever lower: a user who already started us lower (nice -n 15, taskpolicy)
+// keeps that.
 func applyProcessLow() error {
-	err := unix.Setpriority(unix.PRIO_PROCESS, 0, 10)
-	if e := iopolicy(iopolCmdSet, &iopolicyArgs{iopolScopeProcess, iopolTypeDisk, iopolUtility}); e != nil && err == nil {
-		err = e
+	var err error
+	if cur, e := unix.Getpriority(unix.PRIO_PROCESS, 0); e != nil || cur < 10 {
+		err = unix.Setpriority(unix.PRIO_PROCESS, 0, 10)
+	}
+	switch p, e := diskPolicy(); {
+	case e != nil, p == 0 /*DEFAULT*/, p == 1 /*IMPORTANT*/, p == 5 /*STANDARD*/ :
+		if e := iopolicy(iopolCmdSet, &iopolicyArgs{iopolScopeProcess, iopolTypeDisk, iopolUtility}); e != nil && err == nil {
+			err = e
+		}
 	}
 	// Best effort: a scan must not dirty atimes.
 	_ = iopolicy(iopolCmdSet, &iopolicyArgs{iopolScopeProcess, iopolTypeVFSAtime, iopolAtimeUpdatesOff})

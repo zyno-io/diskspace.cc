@@ -220,6 +220,22 @@ describe("ViewerConnection pacing", () => {
   };
   const kinds = (t: ReturnType<typeof setup>) => t.events.map((e) => e.t).filter((k) => k !== "state" && k !== "agentInfo");
 
+  it("ignores applied reports from an earlier connection (gen mismatch)", async () => {
+    const t = setup();
+    t.conn.connect();
+    await t.start();
+    await until(() => t.states().includes("connected"));
+    t.sockets[0].push(await t.agents[0].json(MSG.SCAN_STARTED, { scanId: 1, path: "/x", rootName: "x", volume: null, opts: {} }));
+    for (let i = 0; i < 4; i++) await pushNodes(t, 1);
+    await until(() => kinds(t).filter((k) => k === "nodes").length === 2);
+    t.conn.handle({ t: "applied", n: 10, gen: -1 }); // stale: must not free a slot
+    await sleep(50);
+    expect(kinds(t).filter((k) => k === "nodes").length).toBe(2);
+    t.conn.handle({ t: "applied", n: 10 }); // current (untagged) report frees one
+    await sleep(20);
+    expect(kinds(t).filter((k) => k === "nodes").length).toBe(3);
+  });
+
   it("keeps at most 2 NODES in flight; each applied releases one; SCAN_DONE stays behind queued NODES", async () => {
     const t = setup();
     t.conn.connect();

@@ -336,7 +336,7 @@ export class ViewerConnection {
           if (this.outstanding >= MAX_NODES_IN_FLIGHT) break;
           this.qHead++;
           this.outstanding++;
-          this.o.post({ t: "nodes", v: decodeNodes(q.body, q.wire) });
+          this.o.post({ t: "nodes", v: { ...decodeNodes(q.body, q.wire), gen: this.gen } });
         } else {
           this.qHead++;
           this.o.post(q.e);
@@ -436,8 +436,9 @@ export class ViewerConnection {
         this.sendBody(msg.dirFilesReq(c.reqId, c.scanId, c.dirId, c.limit));
         break;
       case "applied": {
-        // only credit bytes this connection delivered (clamp against stale reports after a reconnect)
-        // one report per fully applied batch: frees a pacing slot, returns its bytes
+        // one report per fully applied batch: frees a pacing slot, returns its bytes.
+        // Reports for batches an earlier connection delivered must not touch this one's counters.
+        if (c.gen !== undefined && c.gen !== this.gen) break;
         if (this.outstanding > 0) this.outstanding--;
         this.credit(Math.max(0, Math.floor(c.n)));
         this.pump();

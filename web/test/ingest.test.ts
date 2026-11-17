@@ -52,6 +52,21 @@ function harness(msPerRecord = 0.01) {
 }
 
 describe("IngestScheduler", () => {
+  test("discardAll drops every queued item (reconnect replay), acking batches incl. a partial head", () => {
+    const { env, s, log, applied } = harness(0.01);
+    s.pushBatch(batch(2000, 1, 111)); // partially applied below
+    s.pushBatch(batch(10, 1, 222));
+    s.pushDone({ scanId: 1 } as ScanDone);
+    env.frame();
+    expect(applied).toEqual([]);
+    s.discardAll();
+    expect(applied).toEqual([111, 222]);
+    while (env.frame()) {
+      /* drain */
+    }
+    expect(log.some((l) => l.startsWith("done"))).toBe(false); // stale SCAN_DONE never runs
+  });
+
   test("respects the frame budget and resumes a partial batch", () => {
     const { env, s, log, applied } = harness(0.01); // 100 records/ms
     s.pushBatch(batch(2000, 1, 111)); // 20 ms of work

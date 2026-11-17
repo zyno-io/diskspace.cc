@@ -80,6 +80,16 @@ export class IngestScheduler {
     this.kick();
   }
 
+  /** drop everything queued (scan restarted or replayed); batches are still reported applied */
+  discardAll(): void {
+    for (let i = this.head; i < this.q.length; i++) {
+      const it = this.q[i];
+      if (it.k === "batch") this.h.batchDone(it.b);
+    }
+    this.q = [];
+    this.head = 0;
+  }
+
   /** drop queued batches matching `drop` (a new scan started); each is still reported applied */
   discard(drop: (b: NodeBatch) => boolean): void {
     const keep: IngestItem[] = [];
