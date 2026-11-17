@@ -27,6 +27,8 @@ Prefer not to use a terminal? Download the desktop app for [macOS](https://disks
 - **You choose the privilege level.** If you aren't an administrator, diskspace asks whether to restart elevated (`sudo` / UAC / macOS admin prompt) or to continue with just your own files. Enter means "no". On macOS it also tells you whether Full Disk Access is granted and can open that setting.
 - **Pick what to scan.** The folder you started it from, your home folder, any mounted volume, or any other folder.
 - **Results stream in.** The treemap and list paint within a fraction of a second and fill in as the scan runs; nothing waits for the full scan.
+- **Pause and resume.** Pause stops the scanner from opening new folders (reads in progress finish) and keeps the results so far on screen. Resume continues; Stop ends the scan. A paused scan stays paused across browser reloads, and the elapsed time leaves out the pause.
+- **Update notice.** The viewer, the desktop app and the CLI tell you when a newer stable release exists. The relay answers `GET /v1/latest` with `{"version":"0.1.2"}`. A viewer served by the agent itself (`--no-relay`) has no relay to ask and shows no banner.
 - **Fast.** A parallel, work-stealing scanner using the cheapest metadata calls each OS offers. On an M1 Mac it walks 1.1M entries in ~12 s, against ~105 s for `du -sk` on the same tree.
 - **Accurate.** Allocated (on-disk) and apparent sizes, hardlinks counted once, mount points and firmlinks not double-counted, junctions/symlinks never followed, unreadable folders reported instead of silently skipped.
 

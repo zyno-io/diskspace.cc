@@ -251,6 +251,10 @@ export class ViewerConnection {
       case MSG.SCAN_ENDED:
         this.enqueue({ t: "scanEnded", v: m.v });
         break;
+      case MSG.SCAN_STATE:
+        // ordered with SCAN_STARTED: a replayed "paused" must land after the store reset
+        this.enqueue({ t: "scanState", v: m.v });
+        break;
       case MSG.REPLAY_DONE:
         this.enqueue({ t: "replayDone" });
         break;
@@ -428,6 +432,9 @@ export class ViewerConnection {
         break;
       case "scanCancel":
         this.sendBody(msg.scanCancel(c.scanId));
+        break;
+      case "scanPause":
+        this.sendBody(msg.scanPause(c.scanId, c.paused));
         break;
       case "browse":
         this.sendBody(msg.browse(c.reqId, c.path));

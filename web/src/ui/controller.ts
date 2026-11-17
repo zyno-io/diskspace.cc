@@ -5,7 +5,7 @@
 // `version` signal is throttled so chrome re-renders at most ~4×/s mid-scan.
 
 import { batch, computed, signal } from "@preact/signals";
-import type { AgentInfo, ByeMsg, ConnState, NodeBatch, Progress, ScanDone, ScanEnded, ScanStarted, Session } from "../protocol/types";
+import type { AgentInfo, ByeMsg, ConnState, NodeBatch, Progress, ScanDone, ScanEnded, ScanStarted, ScanState, Session } from "../protocol/types";
 import { defaultUnits, type Units } from "../store/format";
 import { TreeStore } from "../store/tree";
 import { IngestScheduler, trackInput, type IngestEnv } from "./ingest";
@@ -29,6 +29,16 @@ export class Controller {
   /** user chose "Change folder" while results are still around */
   readonly picking = signal(false);
   readonly protocolError = signal<string | null>(null);
+  /** the running scan is paused (phase stays "scanning") */
+  readonly paused = signal(false);
+  /** a pause/resume request is in flight (until the agent's SCAN_STATE arrives) */
+  readonly pausePending = signal(false);
+  /** elapsed ms excluding paused time, from the last SCAN_STATE */
+  readonly stateElapsedMs = signal(0);
+  /** newer stable version than the agent's, once known and not dismissed */
+  readonly latest = signal<string | null>(null);
+  /** the agent can pause (older agents cannot) */
+  readonly canPause = computed(() => this.info.value?.features?.pause === true);
 
   readonly phase = computed<Phase>(() => {
     const c = this.conn.value;
@@ -49,6 +59,7 @@ export class Controller {
   private vTimer = 0;
   private vLast = 0;
   private unitsTouched = false;
+  private pendingTimer = 0;
 
   /** paced main-thread ingest; `backlog` > 0 tells renderers to back off */
   readonly ingest: IngestScheduler;
@@ -74,6 +85,7 @@ export class Controller {
 
   /** stop listening for input (view teardown) */
   dispose(): void {
+    window.clearTimeout(this.pendingTimer);
     this.untrack?.();
     this.untrack = null;
   }
@@ -96,6 +108,7 @@ export class Controller {
       },
       scanDone: (m) => this.ingest.pushDone(m),
       scanEnded: (m) => this.ingest.pushEnded(m),
+      scanState: (m) => this.onScanState(m),
       replayDone: () => this.ingest.pushReplayDone(),
       bye: (m) => {
         this.bye.value = m;
@@ -133,6 +146,41 @@ export class Controller {
     if (s && !this.done.value && !this.ended.value) this.session.scanCancel(s.scanId);
   }
 
+  /** ask the agent to pause; the UI changes when its SCAN_STATE arrives */
+  pause(): void {
+    this.requestPause(true);
+  }
+  resume(): void {
+    this.requestPause(false);
+  }
+  private requestPause(paused: boolean): void {
+    const s = this.scan.value;
+    if (!s || !this.canPause.value || this.done.value || this.ended.value || this.pausePending.value || this.paused.value === paused) return;
+    this.pausePending.value = true;
+    window.clearTimeout(this.pendingTimer);
+    // never leave the button stuck if the reply is lost
+    this.pendingTimer = window.setTimeout(() => (this.pausePending.value = false), 5000);
+    this.session.scanPause(s.scanId, paused);
+  }
+
+  private clearPause(): void {
+    window.clearTimeout(this.pendingTimer);
+    this.pendingTimer = 0;
+    this.paused.value = false;
+    this.pausePending.value = false;
+  }
+
+  private onScanState(m: ScanState): void {
+    if (m.scanId !== this.store.scanId || this.done.value || this.ended.value) return;
+    window.clearTimeout(this.pendingTimer);
+    this.pendingTimer = 0;
+    batch(() => {
+      this.paused.value = m.paused;
+      this.pausePending.value = false;
+      this.stateElapsedMs.value = m.elapsedMs;
+    });
+  }
+
   rescan(): void {
     const s = this.scan.value;
     if (s) this.scanPath(s.path);
@@ -160,6 +208,7 @@ export class Controller {
       this.ended.value = null;
       this.picking.value = false;
       this.protocolError.value = null;
+      this.clearPause();
       this.zoom.value = this.store.root;
       this.selected.value = -1;
       this.hovered.value = -1;
@@ -176,7 +225,10 @@ export class Controller {
   private onEnded(m: ScanEnded): void {
     if (m.scanId !== this.store.scanId) return;
     this.flush();
-    this.ended.value = m;
+    batch(() => {
+      this.clearPause();
+      this.ended.value = m;
+    });
   }
 
   private onDone(m: ScanDone): void {
@@ -194,7 +246,10 @@ export class Controller {
       console.warn("diskspace: SCAN_DONE before tree settled", { orphans: st.orphanCount() });
     }
     this.changed(true);
-    this.done.value = m;
+    batch(() => {
+      this.clearPause();
+      this.done.value = m;
+    });
   }
 
   private flush(): void {

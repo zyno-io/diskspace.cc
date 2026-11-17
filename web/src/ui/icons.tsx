@@ -39,3 +39,18 @@ export const Download = () => (
     <path d="M8 2.5v8M4.5 7 8 10.5 11.5 7M3 13.5h10" />
   </svg>
 );
+export const Pause = () => (
+  <svg {...base}>
+    <path d="M5.5 3.5v9M10.5 3.5v9" />
+  </svg>
+);
+export const Play = () => (
+  <svg {...base}>
+    <path d="M5 3.2v9.6L12.6 8z" />
+  </svg>
+);
+export const Close = () => (
+  <svg {...base} width={12} height={12}>
+    <path d="m4 4 8 8M12 4l-8 8" />
+  </svg>
+);

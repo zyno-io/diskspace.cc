@@ -13,6 +13,7 @@ import { RealSession } from "./protocol/session";
 import type { Session } from "./protocol/types";
 import { App, ErrorStatus, Plane } from "./ui/App";
 import { Controller } from "./ui/controller";
+import { fetchLatest } from "./ui/update";
 
 const params = new URLSearchParams(location.search);
 const embedded = params.get("embedded") === "1";
@@ -83,6 +84,9 @@ function boot(): void {
   const ctl = new Controller(session);
   render(<App ctl={ctl} embedded={embedded} />, root);
   ctl.start();
+  // The demo takes ?latest=0.1.2 to preview the update banner.
+  if (demo) ctl.latest.value = params.get("latest");
+  else void fetchLatest().then((v) => (ctl.latest.value = v));
   addEventListener("pagehide", () => session.close());
 }
 

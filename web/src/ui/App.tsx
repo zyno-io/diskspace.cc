@@ -6,11 +6,12 @@ import type { ConnState } from "../protocol/types";
 import { SurveyGrid } from "../viz/survey";
 import type { Controller } from "./controller";
 import { HostChip } from "./HostChip";
-import { Back } from "./icons";
+import { Back, Close } from "./icons";
 import { prefersReducedMotion } from "./motion";
 import { Picker } from "./Picker";
 import { goToLauncher, Results } from "./Results";
 import { Wordmark } from "./Wordmark";
+import { dismiss, isDismissed, isNewer, updateLink } from "./update";
 
 export function App({ ctl, embedded }: { ctl: Controller; embedded: boolean }) {
   const phase = ctl.phase.value;
@@ -18,11 +19,48 @@ export function App({ ctl, embedded }: { ctl: Controller; embedded: boolean }) {
   useEffect(() => {
     document.title = host ? `${host} – diskspace.cc` : "diskspace.cc";
   }, [host]);
-  if (phase === "scanning" || phase === "done" || phase === "stopped") return <Results ctl={ctl} embedded={embedded} />;
+  const banner = !embedded ? updateOffer(ctl) : null;
+  const body =
+    phase === "scanning" || phase === "done" || phase === "stopped" ? (
+      <Results ctl={ctl} embedded={embedded} />
+    ) : (
+      <Plane ctl={ctl} embedded={embedded} breathe={phase === "connecting"}>
+        {phase === "picker" ? <Picker ctl={ctl} /> : <StatusFor ctl={ctl} />}
+      </Plane>
+    );
   return (
-    <Plane ctl={ctl} embedded={embedded} breathe={phase === "connecting"}>
-      {phase === "picker" ? <Picker ctl={ctl} /> : <StatusFor ctl={ctl} />}
-    </Plane>
+    <div class={`app-shell${banner ? " has-banner" : ""}`}>
+      {banner && <UpdateBanner version={banner.version} href={banner.href} onDismiss={() => (ctl.latest.value = null)} />}
+      {body}
+    </div>
+  );
+}
+
+/** the newer version to announce, if the agent is outdated and the banner was not dismissed */
+function updateOffer(ctl: Controller): { version: string; href: string } | null {
+  const latest = ctl.latest.value;
+  const info = ctl.info.value;
+  if (!latest || !info || !isNewer(info.version, latest) || isDismissed(latest)) return null;
+  return { version: latest, href: updateLink(info) };
+}
+
+export function UpdateBanner({ version, href, onDismiss }: { version: string; href: string; onDismiss: () => void }) {
+  return (
+    <aside class="update-banner" role="region" aria-label="Update available">
+      <p>
+        A newer diskspace (v{version}) is available. <a href={href}>How to update</a>
+      </p>
+      <button
+        class="btn btn-quiet"
+        aria-label="Dismiss"
+        onClick={() => {
+          dismiss(version);
+          onDismiss();
+        }}
+      >
+        <Close />
+      </button>
+    </aside>
   );
 }
 

@@ -11,7 +11,7 @@ import { SurveyGrid } from "../viz/survey";
 import { Check, Copy, Lock } from "../ui/icons";
 import { prefersReducedMotion } from "../ui/motion";
 import { Wordmark } from "../ui/Wordmark";
-import { type Bridge, displayLink, type Snapshot } from "./bridge";
+import { type Bridge, displayLink, type Snapshot, updateUrl } from "./bridge";
 import { qrPath } from "./qr";
 
 /** survey-grid plane with the wordmark bleeding off the bottom edge */
@@ -195,6 +195,14 @@ function Status({ snap }: { snap: Snapshot }) {
   if (!hasLink) {
     title = "Getting a secure link";
     body = slow ? "Still waiting for diskspace.cc. Check your internet connection." : "Setting up end-to-end encryption.";
+  } else if (snap.scan === "paused") {
+    tone = "busy";
+    title = "Paused";
+    body = (
+      <span class="lx-path" title={snap.scanPath}>
+        <bdi>{snap.scanPath}</bdi>
+      </span>
+    );
   } else if (snap.scan === "started") {
     tone = "busy";
     title = "Scanning";
@@ -220,7 +228,7 @@ function Status({ snap }: { snap: Snapshot }) {
     <div class={`lx-state lx-${tone}`} role="status" aria-live="polite">
       <div class="lx-state-title">
         <i class="lx-dot" aria-hidden="true" />
-        <span class={tone === "wait" || tone === "busy" ? "dots" : undefined}>{title}</span>
+        <span class={tone === "wait" || (tone === "busy" && snap.scan !== "paused") ? "dots" : undefined}>{title}</span>
       </div>
       <div class="lx-state-body">{body}</div>
       {code && (
@@ -359,6 +367,14 @@ function RunningScreen({ snap, bridge }: { snap: Snapshot; bridge: Bridge }) {
       {(err || snap.notice) && (
         <p class="lx-warn" role="alert">
           {err || snap.notice}
+        </p>
+      )}
+      {snap.latest && updateUrl(snap) && (
+        <p class="lx-update" role="status">
+          A newer Diskspace (v{snap.latest}) is available.{" "}
+          <button class="lx-linkbtn" onClick={() => run(bridge.app.OpenInBrowser(updateUrl(snap)))}>
+            Download it
+          </button>
         </p>
       )}
       {fda && <FDABanner bridge={bridge} />}

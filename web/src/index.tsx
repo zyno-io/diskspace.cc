@@ -57,6 +57,7 @@ function useDemo(host: { current: HTMLDivElement | null }, grid: { current: HTML
         }, reduced ? 600_000 : 6500);
       },
       scanEnded: () => undefined,
+      scanState: () => undefined,
       replayDone: () => undefined,
       bye: () => undefined,
       error: () => undefined,
@@ -121,7 +122,7 @@ function InstallCard() {
     }
   };
   return (
-    <div class="install card">
+    <div class="install card" id="install">
       <div class="tabs" role="tablist" aria-label="How to run diskspace" onKeyDown={onKey}>
         {tabs.map(([t, label]) => (
           <button key={t} id={`tab-${t}`} role="tab" aria-selected={tab === t} aria-controls="install-panel" tabIndex={tab === t ? 0 : -1} onClick={() => setTab(t)}>

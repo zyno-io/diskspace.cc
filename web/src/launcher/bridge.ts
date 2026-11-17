@@ -22,8 +22,10 @@ export interface Snapshot {
   localUrl: string;
   viewer: "" | "connected" | "disconnected" | "superseded";
   code: string;
-  scan: "" | "started" | "done" | "canceled";
+  scan: "" | "started" | "paused" | "done" | "canceled";
   scanPath: string;
+  /** newer stable release than `version`, or "" */
+  latest?: string;
   notice: string;
   message: string;
   expanded: boolean;
@@ -72,6 +74,13 @@ export async function getBridge(waitMs = 400): Promise<Bridge | null> {
   }
 }
 
+/** where the desktop app's update download lives, by OS ("" = none) */
+export function updateUrl(s: Snapshot): string {
+  if (!s.latest) return "";
+  const os = s.os === "darwin" ? "mac" : s.os === "windows" ? "windows" : "";
+  return os ? `https://diskspace.cc/dl/gui/${os}` : "";
+}
+
 /** a short, display-only form of the link: host + session id, key hidden */
 export function displayLink(url: string): { base: string; hasKey: boolean } {
   try {
@@ -87,6 +96,7 @@ export type StatusTone = "wait" | "live" | "busy" | "done";
 /** the one-line status under the QR code */
 export function statusOf(s: Snapshot): { tone: StatusTone; text: string } {
   if (!s.url && !s.localUrl) return { tone: "wait", text: "Getting a secure link" };
+  if (s.scan === "paused") return { tone: "busy", text: s.scanPath ? `Paused ${s.scanPath}` : "Paused" };
   if (s.scan === "started") return { tone: "busy", text: s.scanPath ? `Scanning ${s.scanPath}` : "Scanning" };
   if (s.viewer === "connected") {
     if (s.scan === "done") return { tone: "done", text: "Done" };
