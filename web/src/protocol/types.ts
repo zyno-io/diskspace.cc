@@ -75,6 +75,9 @@ export interface ScanOptions {
   minFileBytes?: number;
 }
 
+/** Application protocol version; agent and viewer must match exactly. */
+export const PROTO_VERSION = 1;
+
 export interface ScanStarted {
   scanId: number;
   path: string;
@@ -150,7 +153,9 @@ export interface DirRec {
   ownApparent: number;
   ownFiles: number;
   entryErrors: number;
-  firstChildId: number; // meaningful when dirs.length > 0; child i id = firstChildId + i
+  /** total child dirs announced; dirs (inline) is a prefix, the rest follow in DirMoreRec */
+  totalDirs: number;
+  firstChildId: number; // meaningful when totalDirs > 0; child i id = firstChildId + i
   dirs: ChildRec[];
   files: FileRec[];
 }
@@ -169,7 +174,15 @@ export interface FoldEndRec {
   targetId: number;
 }
 
-export type NodeRecord = DirRec | FoldRec | FoldEndRec;
+/** Continuation of DirRec.dirs for an already-announced dir: child i has id firstChildId + i. */
+export interface DirMoreRec {
+  k: 4;
+  id: number;
+  firstChildId: number;
+  dirs: ChildRec[];
+}
+
+export type NodeRecord = DirRec | FoldRec | FoldEndRec | DirMoreRec;
 
 export interface NodeBatch {
   scanId: number;
@@ -197,7 +210,7 @@ export type ConnState =
   | { s: "reconnecting"; attempt: number }
   | { s: "superseded" } // another tab/device took over; offer takeOver()
   | { s: "closed"; reason: string }
-  | { s: "error"; kind: "key-mismatch" | "no-session" | "unsupported" | "protocol" | "network"; message: string };
+  | { s: "error"; kind: "key-mismatch" | "no-session" | "unsupported" | "version" | "protocol" | "network"; message: string };
 
 export interface SessionEvents {
   state(s: ConnState): void;

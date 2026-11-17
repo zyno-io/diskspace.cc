@@ -5,6 +5,7 @@ package session
 import (
 	"context"
 	"crypto/rand"
+	"encoding/json"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -247,6 +248,26 @@ func TestE2EBadHelloFrame(t *testing.T) {
 	_, _, err = ws.Read(ctx)
 	if closeStatus(err) != 4402 {
 		t.Fatalf("want close 4402, got %v", err)
+	}
+}
+
+func TestE2EClientHelloProtoMismatch(t *testing.T) {
+	e := newEnv(t, Config{})
+	ctx := ctx10(t)
+	ws, err := dialRaw(ctx, e.wsURL+"/v1/view?sid="+e.sec.SIDString())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ciph, _, err := handshake(ctx, ws, e.sec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := json.Marshal(proto.ClientHello{Proto: proto.ProtoVersion + 1, Caps: proto.ClientCaps{ZstdStream: true}})
+	ct, _ := ciph.Seal(proto.FrameV2A(append([]byte{proto.MsgClientHello}, body...)))
+	_ = ws.Write(ctx, websocket.MessageBinary, ct)
+	_, _, err = ws.Read(ctx)
+	if closeStatus(err) != 4400 {
+		t.Fatalf("want close 4400, got %v", err)
 	}
 }
 

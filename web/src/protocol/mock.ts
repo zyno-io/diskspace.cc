@@ -7,7 +7,7 @@
 // and SCAN_DONE with denied counts, and supports cancel, browse and dirFiles.
 
 import type { AgentInfo, BrowseResult, ChildRec, ConnState, DirFiles, DirRec, FileRec, NodeRecord, ScanOptions, Session, SessionEvents, Volume } from "./types";
-import { CHILD_FLAG, DIR_FLAG } from "./types";
+import { CHILD_FLAG, DIR_FLAG, PROTO_VERSION } from "./types";
 
 export interface MockOptions {
   /** approximate number of dirs in a full scan */
@@ -220,7 +220,17 @@ class Gen {
     for (let i = 0; i < n && this.pool.length; i++) {
       const rec = this.dir(this.take());
       out.push(rec);
+      if (rec.dirs.length >= 6) {
+        // exercise DIRMORE: move the second half of the child list into a continuation
+        const cut = rec.dirs.length >> 1;
+        out.push({ k: 4, id: rec.id, firstChildId: rec.firstChildId + cut, dirs: rec.dirs.splice(cut) });
+      }
       bytes += 14;
+      for (let m = out.length - 1; m >= 0; m--) {
+        const o = out[m];
+        if (o === rec) break;
+        if (o.k === 4) for (const c of o.dirs) bytes += c.name.length + 2;
+      }
       for (const c of rec.dirs) bytes += c.name.length + 2;
       for (const f of rec.files) bytes += f.name.length + 12;
     }
@@ -313,7 +323,7 @@ class Gen {
       dirs.push({ name: k.name, flags: k.flags ?? 0 });
       if (!k.flags) this.pool.push(cid);
     }
-    return { k: 1, id, flags, ownAlloc: this.ownAlloc[id], ownApparent: this.ownApparent[id], ownFiles: this.ownFiles[id], entryErrors: 0, firstChildId: dirs.length ? first : 0, dirs, files };
+    return { k: 1, id, flags, ownAlloc: this.ownAlloc[id], ownApparent: this.ownApparent[id], ownFiles: this.ownFiles[id], entryErrors: 0, totalDirs: dirs.length, firstChildId: dirs.length ? first : 0, dirs, files };
   }
 
   fileName(p: FileProfile): string {
@@ -562,7 +572,7 @@ export class MockSession implements Session {
 
   constructor(private o: MockOptions = {}) {
     this.info = {
-      proto: 1,
+      proto: PROTO_VERSION,
       version: "0.1.0-demo",
       os: "darwin",
       arch: "arm64",

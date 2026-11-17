@@ -35,7 +35,7 @@ func appendName(b []byte, s string) []byte {
 	return append(b, s...)
 }
 
-// Add appends one record (*DirRecord, *FoldRecord or *FoldEndRecord).
+// Add appends one record (*DirRecord, *DirMoreRecord, *FoldRecord or *FoldEndRecord).
 func (e *NodesEncoder) Add(rec Record) {
 	b := e.buf
 	switch r := rec.(type) {
@@ -47,10 +47,11 @@ func (e *NodesEncoder) Add(rec Record) {
 		b = AppendUvarint(b, r.OwnApparent)
 		b = AppendUvarint(b, r.OwnFiles)
 		b = AppendUvarint(b, r.EntryErrors)
-		b = AppendUvarint(b, uint64(len(r.Dirs)))
-		if len(r.Dirs) > 0 {
+		b = AppendUvarint(b, r.TotalDirs)
+		if r.TotalDirs > 0 {
 			b = AppendUvarint(b, r.FirstChildID)
 		}
+		b = AppendUvarint(b, uint64(len(r.Dirs)))
 		for _, d := range r.Dirs {
 			b = appendName(b, d.Name)
 			b = AppendUvarint(b, d.Flags)
@@ -66,6 +67,15 @@ func (e *NodesEncoder) Add(rec Record) {
 		b = AppendUvarint(b, r.Apparent)
 		b = AppendUvarint(b, r.Files)
 		b = AppendUvarint(b, r.Dirs)
+	case *DirMoreRecord:
+		b = append(b, RecDirMore)
+		b = AppendUvarint(b, r.ID)
+		b = AppendUvarint(b, r.FirstChildID)
+		b = AppendUvarint(b, uint64(len(r.Dirs)))
+		for _, d := range r.Dirs {
+			b = appendName(b, d.Name)
+			b = AppendUvarint(b, d.Flags)
+		}
 	case *FoldEndRecord:
 		b = append(b, RecFoldEnd)
 		b = AppendUvarint(b, r.TargetID)
@@ -181,9 +191,19 @@ func DecodeNodes(body []byte) (scanID uint64, recs []Record, err error) {
 		switch r.byte() {
 		case RecDir:
 			d := &DirRecord{ID: r.uv(), Flags: r.uv(), OwnAlloc: r.uv(), OwnApparent: r.uv(), OwnFiles: r.uv(), EntryErrors: r.uv()}
-			nd := r.count(2)
-			if nd > 0 {
+			d.TotalDirs = r.uv()
+			if d.TotalDirs > MaxChildDirs {
+				r.fail()
+			}
+			if d.TotalDirs > 0 {
 				d.FirstChildID = r.uv()
+			}
+			nd := r.count(2)
+			if uint64(nd) > d.TotalDirs {
+				r.fail()
+				nd = 0
+			}
+			if nd > 0 {
 				d.Dirs = make([]ChildDir, 0, nd)
 				for j := 0; j < nd && r.err == nil; j++ {
 					d.Dirs = append(d.Dirs, ChildDir{Name: r.name(), Flags: r.uv()})
@@ -199,6 +219,17 @@ func DecodeNodes(body []byte) (scanID uint64, recs []Record, err error) {
 			recs = append(recs, d)
 		case RecFold:
 			recs = append(recs, &FoldRecord{TargetID: r.uv(), Alloc: r.uv(), Apparent: r.uv(), Files: r.uv(), Dirs: r.uv()})
+		case RecDirMore:
+			m := &DirMoreRecord{ID: r.uv(), FirstChildID: r.uv()}
+			nd := r.count(2)
+			if nd == 0 {
+				r.fail() // an empty continuation is never emitted
+			}
+			m.Dirs = make([]ChildDir, 0, nd)
+			for j := 0; j < nd && r.err == nil; j++ {
+				m.Dirs = append(m.Dirs, ChildDir{Name: r.name(), Flags: r.uv()})
+			}
+			recs = append(recs, m)
 		case RecFoldEnd:
 			recs = append(recs, &FoldEndRecord{TargetID: r.uv()})
 		default:

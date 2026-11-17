@@ -6,7 +6,7 @@ import type { ViewerState } from "./crypto";
 import { decodeDirFiles, decodeNodes } from "./codec";
 import { ViewerCipher } from "./frame";
 import { decodeA2VJson, framePlain, msg } from "./messages";
-import { MSG } from "./types";
+import { MSG, PROTO_VERSION } from "./types";
 import type { ConnState } from "./types";
 import type { WorkerCommand, WorkerEvent } from "./worker-protocol";
 import { StreamDecoder } from "./zstream";
@@ -123,7 +123,7 @@ export class ViewerConnection {
 
   private onFrameError(gen: number, e: unknown): void {
     if (e instanceof HandshakeError) {
-      const kind = e.kind === "key-mismatch" ? "key-mismatch" : e.kind === "version" ? "unsupported" : "protocol";
+      const kind = e.kind === "key-mismatch" ? "key-mismatch" : e.kind === "version" ? "version" : "protocol";
       this.fail(gen, kind, e.message);
     } else {
       this.fail(gen, "protocol", (e as Error)?.message ?? "protocol error");
@@ -131,7 +131,7 @@ export class ViewerConnection {
   }
 
   /** terminal failure: report, close, never auto-reconnect */
-  private fail(gen: number, kind: "key-mismatch" | "no-session" | "unsupported" | "protocol" | "network", message: string): void {
+  private fail(gen: number, kind: "key-mismatch" | "no-session" | "unsupported" | "version" | "protocol" | "network", message: string): void {
     if (gen !== this.gen || this.terminal) return;
     this.terminal = true;
     this.clearTimers();
@@ -210,6 +210,10 @@ export class ViewerConnection {
     const m = decodeA2VJson(body);
     switch (m.type) {
       case MSG.AGENT_INFO:
+        if (m.v.proto !== PROTO_VERSION) {
+          this.fail(this.gen, "version", `Agent protocol ${m.v.proto}, viewer protocol ${PROTO_VERSION}`);
+          return;
+        }
         if (!this.confirmed) {
           this.confirmed = true;
           this.attempt = 0;
@@ -259,7 +263,7 @@ export class ViewerConnection {
     this.phase = "idle";
     this.clearTimers();
     if (this.terminal || this.superseded) return;
-    const fatal = (kind: "key-mismatch" | "no-session" | "unsupported" | "protocol", message: string) => {
+    const fatal = (kind: "key-mismatch" | "no-session" | "unsupported" | "version" | "protocol", message: string) => {
       this.terminal = true;
       this.state({ s: "error", kind, message });
     };
@@ -267,7 +271,7 @@ export class ViewerConnection {
       case 4401:
         return fatal("key-mismatch", "Key mismatch — stale link or tampering");
       case 4400:
-        return fatal("unsupported", "Agent speaks an unsupported protocol version");
+        return fatal("version", "Agent speaks a different protocol version");
       case 4404:
         return fatal("no-session", "Session not found — the agent may have exited");
       case 4402:

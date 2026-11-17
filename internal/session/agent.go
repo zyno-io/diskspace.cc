@@ -359,7 +359,7 @@ func (a *Agent) buildInfo() proto.AgentInfo {
 		home, _ = os.UserHomeDir()
 	}
 	info := proto.AgentInfo{
-		Proto:        1,
+		Proto:        proto.ProtoVersion,
 		Version:      a.cfg.Version,
 		OS:           runtime.GOOS,
 		Arch:         runtime.GOARCH,

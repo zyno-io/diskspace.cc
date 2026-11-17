@@ -39,10 +39,11 @@ const (
 	RecDir     = 0x01
 	RecFold    = 0x02
 	RecFoldEnd = 0x03
+	RecDirMore = 0x04
 )
 
 // ChildDir is a subdirectory announced by its parent's DirRecord.
-// Its id is FirstChildID + index within DirRecord.Dirs.
+// Its id is FirstChildID + index within DirRecord.Dirs (then DirMoreRecords).
 type ChildDir struct {
 	Name  string
 	Flags uint64
@@ -67,7 +68,8 @@ type DirRecord struct {
 	OwnApparent  uint64
 	OwnFiles     uint64
 	EntryErrors  uint64
-	FirstChildID uint64 // valid when len(Dirs) > 0
+	TotalDirs    uint64 // total subdirectories announced; len(Dirs) <= TotalDirs, the rest follow in DirMoreRecords
+	FirstChildID uint64 // valid when TotalDirs > 0
 	Dirs         []ChildDir
 	Files        []FileEntry
 }
@@ -87,12 +89,22 @@ type FoldEndRecord struct {
 	TargetID uint64
 }
 
-// Record is one of *DirRecord, *FoldRecord, *FoldEndRecord.
+// DirMoreRecord continues the child list of a DirRecord already sent for ID.
+// Child ids in this chunk are FirstChildID + index within Dirs. It is emitted
+// before any record of the children it announces.
+type DirMoreRecord struct {
+	ID           uint64
+	FirstChildID uint64
+	Dirs         []ChildDir
+}
+
+// Record is one of *DirRecord, *FoldRecord, *FoldEndRecord, *DirMoreRecord.
 type Record interface{ isRecord() }
 
 func (*DirRecord) isRecord()     {}
 func (*FoldRecord) isRecord()    {}
 func (*FoldEndRecord) isRecord() {}
+func (*DirMoreRecord) isRecord() {}
 
 // Volume is a mountable filesystem offered in the scan picker.
 // JSON shape mirrors web/src/protocol/types.ts Volume.

@@ -162,8 +162,34 @@ func (r *result) verify(t testing.TB, opts Options) {
 	r.depth = map[uint64]int{0: 0}
 	ended := map[uint64]bool{}
 	foldSeen := map[uint64]bool{}
+	nextChild := map[uint64]uint64{} // dir id -> next expected child id
+	endChild := map[uint64]uint64{}  // dir id -> first child id + TotalDirs
+	announce := func(parent, id uint64, c proto.ChildDir) {
+		if announced[id] {
+			t.Fatalf("child id %d announced twice", id)
+		}
+		announced[id] = true
+		r.depth[id] = r.depth[parent] + 1
+		if c.Flags == 0 {
+			pending[id] = true
+		}
+		if id > r.maxID {
+			r.maxID = id
+		}
+	}
 	for _, rec := range r.recs {
 		switch x := rec.(type) {
+		case *proto.DirMoreRecord:
+			if r.dirRecs[x.ID] == nil || r.foldTargets[x.ID] {
+				t.Fatalf("DIRMORE for dir %d without a preceding unfolded DIR", x.ID)
+			}
+			if len(x.Dirs) == 0 || x.FirstChildID != nextChild[x.ID] || x.FirstChildID+uint64(len(x.Dirs)) > endChild[x.ID] {
+				t.Fatalf("DIRMORE for %d starts at %d, want %d (n=%d)", x.ID, x.FirstChildID, nextChild[x.ID], len(x.Dirs))
+			}
+			for i, c := range x.Dirs {
+				announce(x.ID, x.FirstChildID+uint64(i), c)
+			}
+			nextChild[x.ID] += uint64(len(x.Dirs))
 		case *proto.DirRecord:
 			if !announced[x.ID] {
 				t.Fatalf("dir %d recorded before announcement", x.ID)
@@ -183,19 +209,13 @@ func (r *result) verify(t testing.TB, opts Options) {
 				}
 			}
 			for i, c := range x.Dirs {
-				id := x.FirstChildID + uint64(i)
-				if announced[id] {
-					t.Fatalf("child id %d announced twice", id)
-				}
-				announced[id] = true
-				r.depth[id] = r.depth[x.ID] + 1
-				if c.Flags == 0 {
-					pending[id] = true
-				}
-				if id > r.maxID {
-					r.maxID = id
-				}
+				announce(x.ID, x.FirstChildID+uint64(i), c)
 			}
+			if x.TotalDirs < uint64(len(x.Dirs)) {
+				t.Fatalf("dir %d: %d inline > total %d", x.ID, len(x.Dirs), x.TotalDirs)
+			}
+			nextChild[x.ID] = x.FirstChildID + uint64(len(x.Dirs))
+			endChild[x.ID] = x.FirstChildID + x.TotalDirs
 			r.dirs++
 			r.files += x.OwnFiles
 			r.alloc += x.OwnAlloc
@@ -222,6 +242,11 @@ func (r *result) verify(t testing.TB, opts Options) {
 	}
 	if len(pending) != 0 {
 		t.Fatalf("%d announced children never recorded", len(pending))
+	}
+	for id, next := range nextChild {
+		if next != endChild[id] {
+			t.Fatalf("dir %d: children announced up to %d, total says %d", id, next, endChild[id])
+		}
 	}
 	for id := range r.foldTargets {
 		if !ended[id] {
@@ -534,42 +559,70 @@ func TestFoldMaxDirs(t *testing.T) {
 	}
 }
 
-// A directory with so many subdirectories that announcing them would exceed
-// the protocol's per-message limit must fold them instead of failing.
-func TestFoldOversizeChildList(t *testing.T) {
+// A directory with so many subdirectories that one record cannot carry them
+// all continues its child list in DIRMORE records; nothing is folded.
+func TestDirMoreChunking(t *testing.T) {
+	old := childChunkBytes
+	childChunkBytes = 4 << 10
+	defer func() { childChunkBytes = old }()
+
 	root := t.TempDir()
 	wide := filepath.Join(root, "wide")
 	name := strings.Repeat("n", 240)
-	n := maxChildRecordBytes/(len(name)+8) + 200
+	const n = 100 // ~25 KB of names => several chunks
 	for i := 0; i < n; i++ {
 		d := filepath.Join(wide, fmt.Sprintf("%s%06d", name, i))
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			t.Fatal(err)
 		}
-		if i%500 == 0 {
+		if i%7 == 0 {
 			if err := os.WriteFile(filepath.Join(d, "f"), make([]byte, 5000), 0o644); err != nil {
 				t.Fatal(err)
 			}
 		}
 	}
 	ref := refWalk(t, root)
-	opts := Options{Root: root, Threads: 8}
-	r := runScan(t, opts)
+	r := runScan(t, Options{Root: root, Threads: 8})
 	r.verify(t, r.s.opts)
 	r.compare(t, ref)
-	if len(r.foldTargets) != 1 || r.foldDirs != uint64(n) {
-		t.Fatalf("want 1 fold target with %d dirs, got targets=%d dirs=%d", n, len(r.foldTargets), r.foldDirs)
+	if len(r.foldTargets) != 0 || r.foldDirs != 0 || r.stats.Folded != 0 {
+		t.Fatalf("unexpected folding: targets=%d dirs=%d", len(r.foldTargets), r.foldDirs)
 	}
-	for _, rec := range r.recs {
-		if d, ok := rec.(*proto.DirRecord); ok {
-			sz := 0
-			for _, c := range d.Dirs {
-				sz += len(c.Name) + 4
-			}
-			if sz > maxChildRecordBytes {
-				t.Fatalf("dir %d announces %d bytes of children", d.ID, sz)
-			}
+	var wideID uint64
+	for id, d := range r.dirRecs {
+		if len(d.Dirs) > 0 && id != 0 {
+			wideID = id
 		}
+	}
+	chunks, total := 0, 0
+	for _, rec := range r.recs {
+		var dirs []proto.ChildDir
+		switch x := rec.(type) {
+		case *proto.DirRecord:
+			if x.ID != wideID {
+				continue
+			}
+			dirs = x.Dirs
+		case *proto.DirMoreRecord:
+			if x.ID != wideID {
+				t.Fatalf("DIRMORE for unexpected dir %d", x.ID)
+			}
+			dirs = x.Dirs
+		default:
+			continue
+		}
+		chunks++
+		total += len(dirs)
+		sz := 0
+		for _, c := range dirs {
+			sz += len(c.Name) + 4
+		}
+		if sz > childChunkBytes+len(name)+4+6 {
+			t.Fatalf("chunk of %d bytes exceeds budget %d", sz, childChunkBytes)
+		}
+	}
+	if total != n || chunks < 4 {
+		t.Fatalf("children=%d chunks=%d; want %d children in >=4 chunks", total, chunks, n)
 	}
 }
 

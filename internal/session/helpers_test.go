@@ -322,7 +322,7 @@ func connectViewer(t *testing.T, wsBase string, sec *crypto.Secret) *testViewer 
 			}
 		}
 	}()
-	v.send(proto.MsgClientHello, proto.ClientHello{Proto: 1, UA: "test", Caps: proto.ClientCaps{ZstdStream: true}})
+	v.send(proto.MsgClientHello, proto.ClientHello{Proto: proto.ProtoVersion, UA: "test", Caps: proto.ClientCaps{ZstdStream: true}})
 	return v
 }
 

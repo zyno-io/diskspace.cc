@@ -89,12 +89,14 @@ func TestVarint(t *testing.T) {
 
 func sampleRecords() []Record {
 	return []Record{
-		&DirRecord{ID: 0, Flags: DirHasEntryErrors, OwnAlloc: 4096, OwnApparent: 100, OwnFiles: 3, EntryErrors: 1, FirstChildID: 1,
+		&DirRecord{ID: 0, Flags: DirHasEntryErrors, OwnAlloc: 4096, OwnApparent: 100, OwnFiles: 3, EntryErrors: 1, TotalDirs: 6, FirstChildID: 1,
 			Dirs:  []ChildDir{{"usr", 0}, {"mnt", ChildOtherDevice}, {"héllo 世界", ChildReparse | ChildExcluded}},
 			Files: []FileEntry{{"big.iso", 1 << 40, 1<<40 + 5, FileSparse}, {"a", 1, 1, 0}, {"bad\xff\xfename", 8192, 7, FileBadName}}},
 		&DirRecord{ID: 1, OwnAlloc: 1<<53 - 1, OwnApparent: 1<<53 - 1, OwnFiles: 1 << 33},
-		&DirRecord{ID: 2, Flags: DirReadDenied | DirReadError | DirVanished | DirFoldedChildren, FirstChildID: 1 << 33,
+		&DirRecord{ID: 2, Flags: DirReadDenied | DirReadError | DirVanished | DirFoldedChildren, TotalDirs: 2, FirstChildID: 1 << 33,
 			Dirs: []ChildDir{{"x", 0}}},
+		&DirMoreRecord{ID: 0, FirstChildID: 4, Dirs: []ChildDir{{"more", 0}, {"mnt2", ChildBindMount}, {"héllo", ChildDupDir}}},
+		&DirMoreRecord{ID: 2, FirstChildID: 1<<33 + 1, Dirs: []ChildDir{{"y", 0}}},
 		&FoldRecord{TargetID: 1, Alloc: 1 << 35, Apparent: 1 << 36, Files: 12345, Dirs: 99},
 		&FoldEndRecord{TargetID: 1},
 	}
@@ -141,13 +143,23 @@ func TestNodesStrict(t *testing.T) {
 		t.Fatal("trailing byte accepted")
 	}
 	// oversize name
-	long := &DirRecord{ID: 0, Dirs: []ChildDir{{string(make([]byte, 4097)), 0}}}
-	raw := []byte{MsgNodes, 1, 1, RecDir, 0, 0, 0, 0, 0, 0, 1, 0}
+	long := &DirRecord{ID: 0, TotalDirs: 1, Dirs: []ChildDir{{string(make([]byte, 4097)), 0}}}
+	raw := []byte{MsgNodes, 1, 1, RecDir, 0, 0, 0, 0, 0, 0, 1, 0, 1}
 	raw = AppendUvarint(raw, 4097)
 	raw = append(raw, make([]byte, 4097)...)
 	raw = append(raw, 0, 0)
 	if _, _, err := DecodeNodes(raw); err == nil {
 		t.Fatal("4097-byte name accepted")
+	}
+	// nInline > nTotal rejected; absurd nTotal rejected
+	if _, _, err := DecodeNodes([]byte{MsgNodes, 1, 1, RecDir, 0, 0, 0, 0, 0, 0, 0, 1, 1, 'a', 0, 0}); err == nil {
+		t.Fatal("nInline > nTotal accepted")
+	}
+	raw = []byte{MsgNodes, 1, 1, RecDir, 0, 0, 0, 0, 0, 0}
+	raw = AppendUvarint(raw, MaxChildDirs+1)
+	raw = append(raw, 1, 0, 0)
+	if _, _, err := DecodeNodes(raw); err == nil {
+		t.Fatal("nTotal above cap accepted")
 	}
 	// encoder truncates instead
 	e.Reset(1)
@@ -155,6 +167,21 @@ func TestNodesStrict(t *testing.T) {
 	_, got, err := DecodeNodes(e.Bytes())
 	if err != nil || len(got[0].(*DirRecord).Dirs[0].Name) != MaxNameLen {
 		t.Fatal(err)
+	}
+	// DIRMORE: empty chunk and oversize name rejected
+	if _, _, err := DecodeNodes([]byte{MsgNodes, 1, 1, RecDirMore, 0, 1, 0}); err == nil {
+		t.Fatal("empty DIRMORE accepted")
+	}
+	raw = []byte{MsgNodes, 1, 1, RecDirMore, 0, 1, 1}
+	raw = AppendUvarint(raw, 4097)
+	raw = append(raw, make([]byte, 4097)...)
+	raw = append(raw, 0)
+	if _, _, err := DecodeNodes(raw); err == nil {
+		t.Fatal("4097-byte DIRMORE name accepted")
+	}
+	// count larger than remaining bytes
+	if _, _, err := DecodeNodes([]byte{MsgNodes, 1, 1, RecDirMore, 0, 1, 50, 1, 'a', 0}); err == nil {
+		t.Fatal("bogus DIRMORE count accepted")
 	}
 	// huge count with no data
 	if _, _, err := DecodeNodes([]byte{MsgNodes, 1, 0xff, 0xff, 0xff, 0xff, 0x0f}); err == nil {
@@ -464,6 +491,7 @@ type jsonRecord struct {
 	OwnApparent  uint64     `json:"ownApparent,omitempty"`
 	OwnFiles     uint64     `json:"ownFiles,omitempty"`
 	EntryErrors  uint64     `json:"entryErrors,omitempty"`
+	TotalDirs    uint64     `json:"totalDirs,omitempty"`
 	FirstChildID uint64     `json:"firstChildId,omitempty"`
 	Dirs         []jsonName `json:"dirs,omitempty"`
 	Files        []jsonFile `json:"files,omitempty"`
@@ -479,12 +507,18 @@ func toJSON(recs []Record) []jsonRecord {
 	for _, r := range recs {
 		switch r := r.(type) {
 		case *DirRecord:
-			j := jsonRecord{K: 1, ID: r.ID, Flags: r.Flags, OwnAlloc: r.OwnAlloc, OwnApparent: r.OwnApparent, OwnFiles: r.OwnFiles, EntryErrors: r.EntryErrors, FirstChildID: r.FirstChildID}
+			j := jsonRecord{K: 1, ID: r.ID, Flags: r.Flags, OwnAlloc: r.OwnAlloc, OwnApparent: r.OwnApparent, OwnFiles: r.OwnFiles, EntryErrors: r.EntryErrors, TotalDirs: r.TotalDirs, FirstChildID: r.FirstChildID}
 			for _, d := range r.Dirs {
 				j.Dirs = append(j.Dirs, jsonName{hx([]byte(d.Name)), d.Flags})
 			}
 			for _, f := range r.Files {
 				j.Files = append(j.Files, jsonFile{hx([]byte(f.Name)), f.Alloc, f.Apparent, f.Flags})
+			}
+			out = append(out, j)
+		case *DirMoreRecord:
+			j := jsonRecord{K: 4, ID: r.ID, FirstChildID: r.FirstChildID}
+			for _, d := range r.Dirs {
+				j.Dirs = append(j.Dirs, jsonName{hx([]byte(d.Name)), d.Flags})
 			}
 			out = append(out, j)
 		case *FoldRecord:

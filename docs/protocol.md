@@ -28,7 +28,7 @@ Notation: `‖` concatenation; `L(x)` = ASCII `"diskspace.cc v1 " + x`; `uv` = u
 - `TH = SHA-256(L("th") ‖ sid ‖ M1 ‖ M2)`
 - `k_a2v ‖ k_v2a = HKDF-SHA256(ikm=dh, salt=K, info=L("keys") ‖ TH, 64)`
 - `code = u32be(HKDF-SHA256(ikm=dh, salt=K, info=L("code") ‖ TH, 4)) mod 10^6`, shown as `"123 456"` on both sides.
-- Viewer frame #0 is CLIENT_HELLO under `k_v2a`. The agent waits up to 10 s; only after decrypting it does the agent mark the viewer active (superseding any older viewer) and send STREAM_INIT, AGENT_INFO, then the scan replay.
+- Viewer frame #0 is CLIENT_HELLO under `k_v2a`. The agent waits up to 10 s; if its `proto` differs from the agent's application protocol version the agent closes with 4400; otherwise, only after decrypting it, the agent marks the viewer active (superseding any older viewer) and sends STREAM_INIT, AGENT_INFO, then the scan replay.
 - Viewer treats successful decryption and parsing of AGENT_INFO as key confirmation and shows "End-to-end encrypted · code 123 456".
 
 ## 3. Frames
@@ -57,7 +57,7 @@ The agent starts with an implicit 8 MiB credit window measured in ciphertext byt
 
 | Code | Meaning | Viewer state |
 | --- | --- | --- |
-| 4400 | unknown handshake version | error: unsupported |
+| 4400 | unknown handshake version, or CLIENT_HELLO `proto` ≠ agent's | error: version ("update diskspace") |
 | 4401 | malformed or unauthenticated handshake (key mismatch) | error: key-mismatch |
 | 4402 | protocol or AEAD failure | error: protocol |
 | 4403 | agent token mismatch (relay) | error: protocol |
@@ -105,15 +105,19 @@ Order on a fresh connection: STREAM_INIT, AGENT_INFO, then replay (SCAN_STARTED,
 ```
 NODES   := 0x11 scanId:uv count:uv record*
 DIR     := 0x01 dirId:uv flags:uv ownAlloc:uv ownApparent:uv ownFiles:uv entryErrors:uv
-           nDirs:uv [firstChildId:uv if nDirs>0] (name childFlags:uv)×nDirs
+           nTotal:uv [firstChildId:uv if nTotal>0] nInline:uv (name childFlags:uv)×nInline
            nFiles:uv (name alloc:uv apparent:uv fileFlags:uv)×nFiles
 FOLD    := 0x02 targetId:uv alloc:uv apparent:uv files:uv dirs:uv
 FOLDEND := 0x03 targetId:uv
+DIRMORE := 0x04 dirId:uv firstChildId:uv n:uv (name childFlags:uv)×n        (n ≥ 1)
 DIR_FILES := 0x15 reqId scanId dirId flags restCount restAlloc restApparent n:uv (name alloc apparent fileFlags)×n
 name    := len:uv (≤ 4096) bytes
 ```
 
 - Child i of a DIR has id `firstChildId + i`. Flagged children never get their own DIR record. Root has dirId 0.
+- A DIR announces nTotal child dirs (ids `firstChildId .. firstChildId+nTotal-1`) and carries the first nInline ≤ nTotal of them. If nInline < nTotal, DIRMORE records for the same `dirId` follow, in order, carrying the rest. A huge subdirectory list is thus split into chunks of about 256 KiB of encoded names, all emitted before any record of those children, so no record approaches the 1 MiB message limit and nothing is folded for being too wide.
+- DIRMORE `firstChildId` must equal the next unnamed slot (`firstChildId + names so far`), and the total named must never exceed nTotal. Viewers reserve all nTotal slots at DIR time; slots not yet named are placeholders (not listed, size 0) that keep the directory unsettled. A DIRMORE for a dir whose DIR has been applied but with a wrong `firstChildId`, or overflowing nTotal, is dropped. Records for an id that is unknown or still an unnamed placeholder (DIR, DIRMORE, FOLD, FOLDEND) are buffered by wire id and applied in arrival order once the id is named; any still buffered at SCAN_DONE are reported as unattached folders.
+- nTotal is capped at 2,000,000 (the per-scan announced-directory limit); decoders reject more, and a viewer refuses DIRs that would take its cumulative announced total past the cap. An empty DIRMORE and nInline > nTotal are protocol errors.
 - Flags: dir `READ_DENIED=1 READ_ERROR=2 VANISHED=4 FOLDED_CHILDREN=8 HAS_ENTRY_ERRORS=16`; child `OTHER_DEVICE=1 REPARSE=2 EXCLUDED=4 DUP_DIR=8 BIND_MOUNT=16`; file `MULTILINK=1 SYMLINK=2 SPARSE=4 CLOUD=8 SPECIAL=16 BAD_NAME=32`.
 - Names are raw bytes (Linux) or WTF-8 (Windows). The viewer decodes UTF-8; if the bytes are invalid it substitutes U+FFFD and sets BAD_NAME (32) on the file or child (the decoder synthesizes bit 32 for children).
 - Decoders are strict: counts must be plausible against the remaining bytes (minimum element size), names ≤ 4096, no trailing bytes, unknown record kinds rejected.

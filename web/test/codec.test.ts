@@ -21,8 +21,8 @@ describe("NODES decode (Go vectors)", () => {
         const r: any = b.records[i];
         expect(r.k).toBe(e.k);
         if (e.k === 1) {
-          expect([r.id, r.flags, r.ownAlloc, r.ownApparent, r.ownFiles, r.entryErrors, r.firstChildId]).toEqual(
-            [e.id ?? 0, e.flags ?? 0, e.ownAlloc ?? 0, e.ownApparent ?? 0, e.ownFiles ?? 0, e.entryErrors ?? 0, e.firstChildId ?? 0],
+          expect([r.id, r.flags, r.ownAlloc, r.ownApparent, r.ownFiles, r.entryErrors, r.totalDirs, r.firstChildId]).toEqual(
+            [e.id ?? 0, e.flags ?? 0, e.ownAlloc ?? 0, e.ownApparent ?? 0, e.ownFiles ?? 0, e.entryErrors ?? 0, e.totalDirs ?? 0, e.firstChildId ?? 0],
           );
           expect(r.dirs.map((d: any) => d.name)).toEqual((e.dirs ?? []).map((d: any) => nameOf(d.hex)));
           expect(r.files.map((f: any) => [f.name, f.alloc, f.apparent])).toEqual((e.files ?? []).map((f: any) => [nameOf(f.hex), f.alloc, f.apparent]));
@@ -33,6 +33,9 @@ describe("NODES decode (Go vectors)", () => {
           });
         } else if (e.k === 2) {
           expect([r.targetId, r.alloc, r.apparent, r.files, r.dirs]).toEqual([e.targetId, e.alloc ?? 0, e.apparent ?? 0, e.filesN ?? 0, e.dirsN ?? 0]);
+        } else if (e.k === 4) {
+          expect([r.id, r.firstChildId]).toEqual([e.id ?? 0, e.firstChildId ?? 0]);
+          expect(r.dirs.map((d: any) => [d.name, d.flags & 0xff])).toEqual((e.dirs ?? []).map((d: any) => [nameOf(d.hex), d.flags]));
         } else {
           expect(r.targetId).toBe(e.targetId);
         }
@@ -48,8 +51,8 @@ describe("NODES decode (Go vectors)", () => {
 
   it("rejects oversized names and bogus counts", () => {
     expect(() => decodeNodes(Uint8Array.of(0x11, 1, 0xff, 0xff, 0xff, 0xff, 0x0f))).toThrow(ProtocolError);
-    const long = [0x11, 1, 1, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0x81, 0x20, ...new Array(4097).fill(65), 0, 0];
-    expect(() => decodeNodes(Uint8Array.from(long))).toThrow(ProtocolError);
+    const long = [0x11, 1, 1, 1, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0x81, 0x20, ...new Array(4097).fill(65), 0, 0];
+    expect(() => decodeNodes(Uint8Array.from(long))).toThrow("name too long");
   });
 });
 
@@ -66,6 +69,15 @@ describe("DIR_FILES decode", () => {
   it("truncations rejected", () => {
     const b = unhex(v.dirFiles.body);
     for (let i = 0; i < b.length; i++) expect(() => decodeDirFiles(b.subarray(0, i))).toThrow(ProtocolError);
+  });
+});
+
+describe("DIR child totals", () => {
+  it("rejects nInline > nTotal, absurd nTotal and empty DIRMORE", () => {
+    // 0x11 scan=1 count=1 DIR id flags oa oap of ee nTotal=0 nInline=1 ...
+    expect(() => decodeNodes(Uint8Array.of(0x11, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0x61, 0, 0))).toThrow("inline children exceed total");
+    expect(() => decodeNodes(Uint8Array.of(0x11, 1, 1, 1, 0, 0, 0, 0, 0, 0, 129, 146, 244, 1, 0, 0, 0))).toThrow(ProtocolError); // nTotal=4000001 > cap
+    expect(() => decodeNodes(Uint8Array.of(0x11, 1, 1, 4, 0, 1, 0))).toThrow(ProtocolError);
   });
 });
 

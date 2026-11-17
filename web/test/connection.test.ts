@@ -161,7 +161,7 @@ describe("ViewerConnection against a simulated agent", () => {
   });
 
   it("maps close codes", async () => {
-    for (const [code, kind] of [[4401, "key-mismatch"], [4404, "no-session"], [4400, "unsupported"], [4402, "protocol"]] as const) {
+    for (const [code, kind] of [[4401, "key-mismatch"], [4404, "no-session"], [4400, "version"], [4402, "protocol"]] as const) {
       const t = setup();
       t.conn.connect();
       t.sockets[0].drop(code);

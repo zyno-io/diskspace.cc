@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // JSON message encode/decode and plaintext framing.
-import { MSG } from "./types";
+import { MSG, PROTO_VERSION } from "./types";
 import type { AgentInfo, BrowseResult, ByeMsg, ErrorMsg, Progress, ScanDone, ScanEnded, ScanOptions, ScanStarted } from "./types";
 import { ProtocolError } from "./varint";
 
@@ -26,7 +26,7 @@ export function framePlain(body: Uint8Array): Uint8Array {
 }
 
 export const msg = {
-  clientHello: (ua: string) => encodeMsg(MSG.CLIENT_HELLO, { proto: 1, ua, caps: { zstdStream: true } }),
+  clientHello: (ua: string) => encodeMsg(MSG.CLIENT_HELLO, { proto: PROTO_VERSION, ua, caps: { zstdStream: true } }),
   getRoots: () => encodeMsg(MSG.GET_ROOTS),
   browse: (reqId: number, path: string) => encodeMsg(MSG.BROWSE, { reqId, path }),
   scanStart: (path: string, o: ScanOptions = {}) =>

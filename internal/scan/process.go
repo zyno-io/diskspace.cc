@@ -31,18 +31,17 @@ type worker struct {
 
 func (w *worker) emit(r proto.Record) { w.s.out <- r }
 
-// maxChildRecordBytes bounds the encoded subdirectory list of one DirRecord so
-// a single record always fits in a NODES message (1 MiB body limit).
-const maxChildRecordBytes = 768 << 10
+// childChunkBytes bounds the encoded subdirectory list carried by one
+// DirRecord or DirMoreRecord (a chunk may overshoot by at most one child,
+// <= proto.MaxNameLen+4 bytes). Larger lists continue in DirMoreRecords, so a
+// single record is always far below the 1 MiB message limit. A var so tests
+// can shrink it.
+var childChunkBytes = 256 << 10
 
-// childBytes estimates the encoded size of announced children: name length
-// varint + name + flags varint.
-func childBytes(kids []kid) int {
-	n := 0
-	for i := range kids {
-		n += len(kids[i].name) + 4
-	}
-	return n
+// childCost is the encoded size of one announced child: name length varint +
+// (possibly truncated) name + flags varint, rounded up.
+func childCost(k *kid) int {
+	return min(len(k.name), proto.MaxNameLen) + 4
 }
 
 // reserveIDs allocates n consecutive ids unless that would exceed MaxDirs.
@@ -193,15 +192,12 @@ func (w *worker) process(j job) {
 	}
 	var grp *foldGroup
 	var first uint64
+	var more []*proto.DirMoreRecord
 	announce := false
 	if n := len(w.kids); n > 0 {
 		fold := false
 		if nDesc > 0 && int(j.depth)+1 > opts.MaxDepth {
 			fold = true
-		} else if childBytes(w.kids) > maxChildRecordBytes {
-			// Announcing this many subdirectories would exceed the 1 MiB
-			// protocol message limit; report the subtree as folded totals.
-			fold = nDesc > 0
 		} else if f, ok := s.reserveIDs(uint64(n)); ok {
 			first, announce = f, true
 		} else if nDesc > 0 {
@@ -213,11 +209,18 @@ func (w *worker) process(j job) {
 			grp.pending.Store(int64(nDesc))
 		} else if announce {
 			rec.FirstChildID = first
-			rec.Dirs = make([]proto.ChildDir, n)
+			rec.TotalDirs = uint64(n)
 			for i := range w.kids {
 				k := &w.kids[i]
-				rec.Dirs[i] = proto.ChildDir{Name: k.name, Flags: k.flags}
 				s.arena.set(first+uint64(i), j.id, k.name, k.ident, k.flags)
+			}
+			// Split the child list into chunks of ~childChunkBytes: the first
+			// rides in the DirRecord, the rest in DirMoreRecords.
+			cut := chunkEnd(w.kids, 0)
+			rec.Dirs = childDirs(w.kids[:cut])
+			for start := cut; start < n; start = cut {
+				cut = chunkEnd(w.kids, start)
+				more = append(more, &proto.DirMoreRecord{ID: j.id, FirstChildID: first + uint64(start), Dirs: childDirs(w.kids[start:cut])})
 			}
 		}
 	}
@@ -233,7 +236,10 @@ func (w *worker) process(j job) {
 		})
 		rec.Files = slices.Clone(w.top)
 	}
-	w.emit(rec) // parent record precedes any child job
+	w.emit(rec) // parent record (and its continuations) precede any child job
+	for _, m := range more {
+		w.emit(m)
+	}
 	if nDesc > 0 && !s.cancelled.Load() {
 		w.spawn(j, first, grp)
 	}
@@ -259,4 +265,27 @@ func (w *worker) spawn(j job, first uint64, grp *foldGroup) {
 	w.dq.pushBatch(w.batch)
 	s.wake(n)
 	clear(w.batch)
+}
+
+// chunkEnd returns the end index of the chunk of kids starting at start: it
+// holds at least one child and stops once childChunkBytes is reached.
+func chunkEnd(kids []kid, start int) int {
+	size, i := 0, start
+	for i < len(kids) {
+		c := childCost(&kids[i])
+		if i > start && size+c > childChunkBytes {
+			break
+		}
+		size += c
+		i++
+	}
+	return i
+}
+
+func childDirs(kids []kid) []proto.ChildDir {
+	out := make([]proto.ChildDir, len(kids))
+	for i := range kids {
+		out[i] = proto.ChildDir{Name: kids[i].name, Flags: kids[i].flags}
+	}
+	return out
 }

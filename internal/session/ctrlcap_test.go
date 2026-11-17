@@ -71,7 +71,7 @@ func TestScanStartRespectsCtrlCap(t *testing.T) {
 		ct, _ := ciph.Seal(proto.FrameV2A(b))
 		return ws.Write(ctx, websocket.MessageBinary, ct)
 	}
-	send(proto.MsgClientHello, proto.ClientHello{Proto: 1, Caps: proto.ClientCaps{ZstdStream: true}})
+	send(proto.MsgClientHello, proto.ClientHello{Proto: proto.ProtoVersion, Caps: proto.ClientCaps{ZstdStream: true}})
 	time.Sleep(200 * time.Millisecond)
 	a.mu.Lock()
 	act := a.active

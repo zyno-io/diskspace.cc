@@ -106,7 +106,7 @@ func New(opts Options) (*Scanner, error) {
 		opts.Threads = min(max(2*runtime.NumCPU(), 8), 32)
 	}
 	if opts.MaxDirs == 0 {
-		opts.MaxDirs = 2_000_000
+		opts.MaxDirs = proto.MaxScanDirs
 	}
 	if opts.MaxDepth <= 0 {
 		opts.MaxDepth = 512

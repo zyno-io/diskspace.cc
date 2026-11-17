@@ -47,7 +47,11 @@ const (
 	MaxNameLen       = 4096
 	MaxFramePlain    = MaxBody + 1
 	MaxDirFilesLimit = 10000
-	InitialCredit    = 8 << 20 // implicit initial credit window (ciphertext bytes)
+	// MaxScanDirs bounds the directories one scan may announce; viewers refuse
+	// to allocate more, so a DIR's total child count is capped by it too.
+	MaxScanDirs   = 2_000_000
+	MaxChildDirs  = MaxScanDirs
+	InitialCredit = 8 << 20 // implicit initial credit window (ciphertext bytes)
 )
 
 // Reasons / codes.
@@ -67,6 +71,12 @@ type ScanRef struct {
 	ID    uint64 `json:"id"`
 	State string `json:"state"` // running | done | canceled | error
 }
+
+// ProtoVersion is the application protocol version. Agent and viewer must
+// match exactly: the viewer is served by the relay and agents are separate
+// binaries, so a mismatch fails with an "update diskspace" message instead of
+// misparsing records.
+const ProtoVersion = 1
 
 // AgentInfo is the AGENT_INFO payload.
 type AgentInfo struct {

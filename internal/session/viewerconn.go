@@ -164,6 +164,10 @@ func (a *Agent) serveViewer(ws *websocket.Conn, g *generation) {
 		v.fail(closeProtocol, "protocol error")
 		return
 	}
+	if hello.Proto != proto.ProtoVersion {
+		v.fail(closeVersion, "unsupported version")
+		return
+	}
 	v.code = keys.Code
 
 	comp := proto.NewStreamCompressor(hello.Caps.ZstdStream)

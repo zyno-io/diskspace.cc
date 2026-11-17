@@ -47,6 +47,9 @@ function file(r: Reader): FileRec {
   return { name: n.s, alloc, apparent, flags };
 }
 
+/** per-scan announced-directory cap (agent MaxScanDirs); also bounds one DIR's child count */
+export const MAX_CHILD_DIRS = 2_000_000;
+
 /** Decode a NODES body (starting with the 0x11 type byte). */
 export function decodeNodes(body: Uint8Array, wireBytes = 0): NodeBatch {
   const r = new Reader(body);
@@ -63,11 +66,13 @@ export function decodeNodes(body: Uint8Array, wireBytes = 0): NodeBatch {
       const ownApparent = r.uv();
       const ownFiles = r.uv();
       const entryErrors = r.uv();
+      const totalDirs = r.uv();
+      if (totalDirs > MAX_CHILD_DIRS) throw new ProtocolError("child count too large");
+      const firstChildId = totalDirs > 0 ? r.uv() : 0;
       const nd = r.count(2);
-      let firstChildId = 0;
+      if (nd > totalDirs) throw new ProtocolError("inline children exceed total");
       const dirs: ChildRec[] = [];
       if (nd > 0) {
-        firstChildId = r.uv();
         for (let j = 0; j < nd; j++) {
           const n = name(r);
           let f = r.uv();
@@ -79,12 +84,25 @@ export function decodeNodes(body: Uint8Array, wireBytes = 0): NodeBatch {
       const nf = r.count(4);
       const files: FileRec[] = [];
       for (let j = 0; j < nf; j++) files.push(file(r));
-      const d: DirRec = { k: 1, id, flags, ownAlloc, ownApparent, ownFiles, entryErrors, firstChildId, dirs, files };
+      const d: DirRec = { k: 1, id, flags, ownAlloc, ownApparent, ownFiles, entryErrors, totalDirs, firstChildId, dirs, files };
       records.push(d);
     } else if (kind === 2) {
       records.push({ k: 2, targetId: r.uv(), alloc: r.uv(), apparent: r.uv(), files: r.uv(), dirs: r.uv() });
     } else if (kind === 3) {
       records.push({ k: 3, targetId: r.uv() });
+    } else if (kind === 4) {
+      const id = r.uv();
+      const firstChildId = r.uv();
+      const nd = r.count(2);
+      if (nd === 0) throw new ProtocolError("empty DIRMORE");
+      const dirs: ChildRec[] = [];
+      for (let j = 0; j < nd; j++) {
+        const n = name(r);
+        let f = r.uv();
+        if (n.bad && !(f & FILE_FLAG.BAD_NAME)) f += FILE_FLAG.BAD_NAME;
+        dirs.push({ name: n.s, flags: f });
+      }
+      records.push({ k: 4, id, firstChildId, dirs });
     } else {
       throw new ProtocolError("unknown record kind");
     }

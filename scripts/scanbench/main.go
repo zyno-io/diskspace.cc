@@ -61,6 +61,10 @@ func main() {
 			for i, c := range x.Dirs {
 				nodes[x.FirstChildID+uint64(i)] = node{x.ID, c.Name}
 			}
+		case *proto.DirMoreRecord:
+			for i, c := range x.Dirs {
+				nodes[x.FirstChildID+uint64(i)] = node{x.ID, c.Name}
+			}
 		case *proto.FoldRecord:
 			foldDirs[x.TargetID] += x.Dirs
 		}

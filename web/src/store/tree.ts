@@ -3,11 +3,13 @@
 // Columnar (SoA) scan tree. One internal index per node; wire dir ids are
 // mapped through `wire2idx`. Dirs announced by their parent get a contiguous
 // index block, listed files another, the "other files" bucket a single slot.
+// A DIR reserves all its child slots up front; DIRMORE names the rest in place.
 // Every DIR/FOLD record adds its own bytes to all ancestors (O(depth)), so
 // totals are always consistent with what has arrived so far.
 
-import type { DirFiles, DirRec, FileRec, FoldEndRec, FoldRec, NodeBatch, NodeRecord, ScanStarted } from "../protocol/types";
-import { DIR_FLAG } from "../protocol/types";
+import type { ChildRec, DirFiles, DirMoreRec, DirRec, FileRec, FoldEndRec, FoldRec, NodeBatch, NodeRecord, ScanStarted } from "../protocol/types";
+import { MAX_CHILD_DIRS } from "../protocol/codec";
+import { DIR_FLAG, FILE_FLAG } from "../protocol/types";
 
 export const KIND_NONE = 0; // dead slot (replaced file listing)
 export const KIND_DIR = 1;
@@ -47,6 +49,8 @@ export class TreeStore {
   unsettled = new Int32Array(0);
   dStart = new Int32Array(0);
   dCount = new Int32Array(0);
+  /** child dir slots already named (dCount - dFilled are placeholders) */
+  dFilled = new Int32Array(0);
   fStart = new Int32Array(0);
   fCount = new Int32Array(0);
   bucket = new Int32Array(0);
@@ -54,6 +58,8 @@ export class TreeStore {
 
   private wire2idx = new Int32Array(0);
   private orphans = new Map<number, NodeRecord[]>();
+  /** child slots announced so far (bounded by MAX_CHILD_DIRS) */
+  private announced = 0;
 
   /** bumped on every mutation batch; renderers compare against it */
   version = 0;
@@ -75,6 +81,7 @@ export class TreeStore {
     this.names.length = 0;
     this.wire2idx.fill(-1);
     this.orphans.clear();
+    this.announced = 0;
     this.scanId = m.scanId;
     this.rootPath = m.path;
     this.synth = -1;
@@ -107,9 +114,15 @@ export class TreeStore {
   }
 
   private apply(r: NodeRecord): void {
-    const wid = r.k === 1 ? r.id : r.targetId;
+    const wid = r.k === 1 || r.k === 4 ? r.id : r.targetId;
     const idx = wid < this.wire2idx.length ? this.wire2idx[wid] : -1;
-    if (idx < 0) {
+    if (r.k === 4 && idx >= 0 && this.kind[idx] !== KIND_NONE) {
+      // continuation of a dir whose DIR was applied; mismatches are dropped there
+      this.applyDirMore(idx, r);
+      return;
+    }
+    // unknown id, or a child slot announced by its parent's DIR but not yet named by a DIRMORE
+    if (idx < 0 || this.kind[idx] === KIND_NONE) {
       const q = this.orphans.get(wid);
       if (q) q.push(r);
       else this.orphans.set(wid, [r]);
@@ -117,11 +130,15 @@ export class TreeStore {
     }
     if (r.k === 1) this.applyDir(idx, r);
     else if (r.k === 2) this.applyFold(idx, r);
-    else this.applyFoldEnd(idx, r);
+    else if (r.k === 3) this.applyFoldEnd(idx, r);
   }
 
   private applyDir(idx: number, r: DirRec): void {
     if (this.flags[idx] & F_RECORD) return; // duplicate (replay overlap)
+    const total = r.totalDirs, nd = r.dirs.length;
+    // Ids are sequential below the agent's per-scan cap; refuse records that would
+    // make the store allocate more (hostile agent) or index the id map absurdly.
+    if (nd > total || this.announced + total > MAX_CHILD_DIRS || (total > 0 && r.firstChildId + total > MAX_CHILD_DIRS + 1)) return;
     this.flags[idx] |= F_RECORD | (r.flags & 0xff);
     if (r.flags & DIR_FLAG.READ_DENIED) this.deniedDirs++;
 
@@ -133,28 +150,21 @@ export class TreeStore {
 
     const d = this.depth[idx] + 1;
     let pending = 0;
-    // announced child dirs
-    const nd = r.dirs.length;
-    if (nd > 0) {
-      const s = this.alloc(nd);
+    if (total > 0) {
+      // Reserve every child slot once (stable indices). Slots past the inline
+      // chunk are KIND_NONE placeholders until a DIRMORE names them; each counts
+      // as an unsettled child so the dir cannot settle early.
+      this.announced += total;
+      const s = this.alloc(total);
       this.dStart[idx] = s;
-      this.dCount[idx] = nd;
-      let real = 0;
-      for (let i = 0; i < nd; i++) {
-        const c = r.dirs[i];
-        const ci = s + i;
-        this.initNode(ci, KIND_DIR, idx, c.name, d);
-        this.flags[ci] = (c.flags & 0xff) << CHILD_SHIFT;
-        if (c.flags) {
-          // flagged children (other device, excluded, …) never get a record
-          this.flags[ci] |= F_RECORD;
-        } else {
-          this.unsettled[ci] = 1;
-          real++;
-        }
-        this.mapWire(r.firstChildId + i, ci);
+      this.dCount[idx] = total;
+      this.dFilled[idx] = nd;
+      for (let i = 0; i < total; i++) {
+        this.initNode(s + i, KIND_NONE, idx, "", d);
+        this.mapWire(r.firstChildId + i, s + i);
       }
-      pending += real;
+      const real = this.fillChildren(idx, s, r.dirs, r.firstChildId, d);
+      pending += real + (total - nd);
       if (real) this.addUp(idx, 0, 0, 0, real);
     }
     this.setFiles(idx, r.files, d);
@@ -163,15 +173,59 @@ export class TreeStore {
     this.unsettled[idx] += pending - 1;
     if (this.unsettled[idx] === 0) this.settle(idx);
 
-    if (nd > 0 && this.orphans.size > 0) {
-      for (let i = 0; i < nd; i++) {
-        const q = this.orphans.get(r.firstChildId + i);
-        if (q) {
-          this.orphans.delete(r.firstChildId + i);
-          for (const o of q) this.apply(o);
-        }
+    if (nd > 0) this.replayOrphans(r.firstChildId, nd);
+  }
+
+  /** name child slots [s, s+dirs.length); returns how many await their own record */
+  private fillChildren(idx: number, s: number, dirs: ChildRec[], firstChildId: number, d: number): number {
+    let real = 0;
+    for (let i = 0; i < dirs.length; i++) {
+      const c = dirs[i];
+      const ci = s + i;
+      this.initNode(ci, KIND_DIR, idx, c.name, d);
+      this.flags[ci] = (c.flags & 0xff) << CHILD_SHIFT;
+      if (c.flags & ~FILE_FLAG.BAD_NAME) {
+        // flagged children (other device, excluded, …) never get a record;
+        // BAD_NAME alone is only a name annotation (set by the decoder)
+        this.flags[ci] |= F_RECORD;
+      } else {
+        this.unsettled[ci] = 1;
+        real++;
+      }
+      this.mapWire(firstChildId + i, ci);
+    }
+    return real;
+  }
+
+  private replayOrphans(first: number, n: number): void {
+    if (this.orphans.size === 0) return;
+    for (let i = 0; i < n; i++) {
+      const q = this.orphans.get(first + i);
+      if (q) {
+        this.orphans.delete(first + i);
+        for (const o of q) this.apply(o);
       }
     }
+  }
+
+  /**
+   * DIRMORE: name the next child slots of an already-recorded dir. A chunk that
+   * does not start at the next unfilled slot, overflows the announced total, or
+   * targets a dir without a DIR record is dropped (not buffered).
+   */
+  private applyDirMore(idx: number, r: DirMoreRec): void {
+    const total = this.dCount[idx], filled = this.dFilled[idx], nd = r.dirs.length;
+    if (!(this.flags[idx] & F_RECORD) || nd === 0 || filled + nd > total) return;
+    const ds = this.dStart[idx];
+    if (r.firstChildId !== this.wireId[ds] + filled) return;
+    const real = this.fillChildren(idx, ds + filled, r.dirs, r.firstChildId, this.depth[idx] + 1);
+    this.dFilled[idx] = filled + nd;
+    // each filled slot stops being a placeholder: a real child keeps the pending
+    // count (now its own), a flagged one resolves it
+    this.unsettled[idx] -= nd - real;
+    if (real) this.addUp(idx, 0, 0, 0, real);
+    if (nd - real > 0 && this.unsettled[idx] === 0) this.settle(idx);
+    this.replayOrphans(r.firstChildId, nd);
   }
 
   private applyFold(idx: number, r: FoldRec): void {
@@ -342,7 +396,7 @@ export class TreeStore {
   childrenOf(i: number, out: number[]): number {
     out.length = 0;
     const ds = this.dStart[i], dc = this.dCount[i];
-    for (let k = 0; k < dc; k++) out.push(ds + k);
+    for (let k = 0; k < dc; k++) if (this.kind[ds + k] === KIND_DIR) out.push(ds + k);
     const fs = this.fStart[i], fc = this.fCount[i];
     for (let k = 0; k < fc; k++) if (this.kind[fs + k] === KIND_FILE) out.push(fs + k);
     // a bucket with no files is just the dir's own blocks; not worth a row
@@ -352,7 +406,7 @@ export class TreeStore {
   }
 
   hasChildren(i: number): boolean {
-    return this.dCount[i] > 0 || this.fCount[i] > 0 || (this.bucket[i] >= 0 && this.files(this.bucket[i]) > 0) || (i === this.root && this.synth >= 0);
+    return this.dFilled[i] > 0 || this.fCount[i] > 0 || (this.bucket[i] >= 0 && this.files(this.bucket[i]) > 0) || (i === this.root && this.synth >= 0);
   }
 
   /** children sorted by allocated size desc (fresh array) */
@@ -402,7 +456,7 @@ export class TreeStore {
     this.totAlloc[i] = this.totApparent[i] = this.totFiles[i] = this.totDirs[i] = 0;
     this.listedAlloc[i] = this.listedApparent[i] = this.listedCount[i] = 0;
     this.unsettled[i] = 0;
-    this.dStart[i] = this.dCount[i] = this.fStart[i] = this.fCount[i] = 0;
+    this.dStart[i] = this.dCount[i] = this.dFilled[i] = this.fStart[i] = this.fCount[i] = 0;
     this.bucket[i] = -1;
     this.names[i] = name;
   }
@@ -454,6 +508,7 @@ export class TreeStore {
     this.unsettled = g(this.unsettled);
     this.dStart = g(this.dStart);
     this.dCount = g(this.dCount);
+    this.dFilled = g(this.dFilled);
     this.fStart = g(this.fStart);
     this.fCount = g(this.fCount);
     this.bucket = g(this.bucket);
