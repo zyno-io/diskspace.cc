@@ -25,6 +25,8 @@ jobs:
       # without a web build.
       - run: go vet ./...
       - run: go test -race -count=1 ./...
+        env:
+          DISKSPACE_PWSH_TESTS: ${{ matrix.os == 'windows-latest' && '1' || '' }}
 
   web:
     runs-on: ubuntu-latest

@@ -308,6 +308,7 @@ func TestShellBootstrapChecksums(t *testing.T) {
 			}
 			for _, tc := range bootstrapCases(asset, digest) {
 				t.Run(downloader+"/"+hasher+"/"+tc.name, func(t *testing.T) {
+					t.Parallel()
 					dir := t.TempDir()
 					bin := filepath.Join(dir, "bin")
 					if err := os.Mkdir(bin, 0o700); err != nil {
@@ -487,6 +488,7 @@ var psCases = map[string]bool{
 }
 
 func TestPowerShellBootstrapChecksums(t *testing.T) {
+	requirePwshTests(t)
 	pwsh, err := exec.LookPath("pwsh")
 	if err != nil {
 		t.Skip("PowerShell not installed")
@@ -557,6 +559,7 @@ function Expand-Archive { throw 'VERIFIED_EXTRACTION' }
 }
 
 func TestPowerShellRunsBinaryWithArgsAndCleansUp(t *testing.T) {
+	requirePwshTests(t)
 	pwsh, err := exec.LookPath("pwsh")
 	if err != nil {
 		t.Skip("PowerShell not installed")
@@ -594,6 +597,7 @@ function Invoke-DSFixture { foreach ($v in $args) { [Console]::Out.WriteLine("CL
 }
 
 func TestPowerShellRejectsForeignReleaseURL(t *testing.T) {
+	requirePwshTests(t)
 	pwsh, err := exec.LookPath("pwsh")
 	if err != nil {
 		t.Skip("PowerShell not installed")
@@ -643,5 +647,14 @@ func TestDevBinaryDir(t *testing.T) {
 	}
 	if rec := get(h, "/dl/linux/amd64"); rec.Code != 302 || rec.Header().Get("Location") != "/devrel/local/diskspace_linux_amd64.tar.gz" {
 		t.Fatalf("redirect: %d %q", rec.Code, rec.Header().Get("Location"))
+	}
+}
+
+// requirePwshTests gates the slow PowerShell bootstrap tests (pwsh startup is
+// seconds per run). CI sets DISKSPACE_PWSH_TESTS=1 on the Windows job.
+func requirePwshTests(t *testing.T) {
+	t.Helper()
+	if os.Getenv("DISKSPACE_PWSH_TESTS") != "1" {
+		t.Skip("set DISKSPACE_PWSH_TESTS=1 to run PowerShell bootstrap tests")
 	}
 }
