@@ -30,7 +30,7 @@ function useDemo(host: { current: HTMLDivElement | null }, grid: { current: HTML
     const session = new MockSession({ targetDirs: DEMO_DIRS, durationMs: 15_000, quick: true, seed: 11 });
     let timer = 0;
     let final = 1;
-    const home = "/Users/sean";
+    const home = "/Users/alex";
     session.start({
       state: () => undefined,
       agentInfo: () => session.scanStart(home),

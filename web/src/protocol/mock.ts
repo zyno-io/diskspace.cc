@@ -360,7 +360,7 @@ class Gen {
       case K.VolRoot:
         return [[k("Applications", K.Apps), k("Library", K.System), k("System", K.System), k("Users", K.Users), k("Volumes", K.Volumes), k("opt", K.System), k("private", K.System), k("usr", K.System), k("cores", K.Denied), k(".Spotlight-V100", K.Denied), k(".fseventsd", K.Denied)], P.tiny];
       case K.Users:
-        return [[k("sean", K.Home), k("Shared", K.Generic), k("maria", K.Denied), k("Guest", K.Denied)], P.none];
+        return [[k("alex", K.Home), k("Shared", K.Generic), k("maria", K.Denied), k("Guest", K.Denied)], P.none];
       case K.Volumes:
         return [[k("Backup Plus", K.Generic, CHILD_FLAG.OTHER_DEVICE), k("Shared", K.Generic, CHILD_FLAG.OTHER_DEVICE), k("Macintosh HD", K.Generic, CHILD_FLAG.REPARSE)], P.none];
       case K.Home:
@@ -576,15 +576,15 @@ export class MockSession implements Session {
       version: "0.1.0-demo",
       os: "darwin",
       arch: "arm64",
-      hostname: "Seans-MacBook-Pro",
-      user: "sean",
-      invokingUser: "sean",
+      hostname: "Alexs-MacBook-Pro",
+      user: "alex",
+      invokingUser: "alex",
       elevated: false,
       elevation: "none",
       fda: "denied",
       root: null,
-      cwd: { path: "/Users/sean/Projects" },
-      home: "/Users/sean",
+      cwd: { path: "/Users/alex/Projects" },
+      home: "/Users/alex",
       autoScan: o.autoScan ?? null,
       volumes: DEMO_VOLUMES,
       scan: null,
@@ -696,11 +696,11 @@ export class MockSession implements Session {
     const norm = path.replace(/\/+$/, "") || "/";
     const fixed: Record<string, string[]> = {
       "/": ["Applications", "Library", "System", "Users", "Volumes", "opt", "private", "usr"],
-      "/Users": ["Shared", "sean"],
-      "/Users/sean": ["Applications", "Desktop", "Documents", "Downloads", "Library", "Movies", "Music", "Pictures", "Projects", "go"],
-      "/Users/sean/Projects": [...PROJECTS].sort(),
+      "/Users": ["Shared", "alex"],
+      "/Users/alex": ["Applications", "Desktop", "Documents", "Downloads", "Library", "Movies", "Music", "Pictures", "Projects", "go"],
+      "/Users/alex/Projects": [...PROJECTS].sort(),
       "/Volumes": ["Backup Plus", "Shared"],
-      "/Users/sean/Library": ["Application Support", "Caches", "Containers", "Developer", "Group Containers", "Logs", "Mobile Documents", "Preferences"],
+      "/Users/alex/Library": ["Application Support", "Caches", "Containers", "Developer", "Group Containers", "Logs", "Mobile Documents", "Preferences"],
     };
     let dirs = fixed[norm];
     if (!dirs) {
@@ -776,7 +776,7 @@ function hash(s: string): number {
 
 /** synchronous full generation (tests, benchmarks): records in stream order */
 export function generateTree(targetDirs: number, opts: { root?: "home" | "volume"; seed?: number; fdaDenied?: boolean } = {}): { records: NodeRecord[]; totals: { dirs: number; files: number; alloc: number; apparent: number }; denied: number } {
-  const gen = new Gen(targetDirs, opts.root === "volume" ? K.VolRoot : K.Home, opts.root === "volume" ? "Macintosh HD" : "sean", opts.fdaDenied ?? true, opts.seed ?? 7);
+  const gen = new Gen(targetDirs, opts.root === "volume" ? K.VolRoot : K.Home, opts.root === "volume" ? "Macintosh HD" : "alex", opts.fdaDenied ?? true, opts.seed ?? 7);
   const records: NodeRecord[] = [];
   while (!gen.done) gen.emit(2000, records);
   return { records, totals: gen.totals, denied: gen.denied };

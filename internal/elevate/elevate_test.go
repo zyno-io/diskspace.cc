@@ -30,7 +30,7 @@ func TestParseAnswer(t *testing.T) {
 func prompt(t *testing.T, in, goos string, fda FDAState) (Choice, string) {
 	t.Helper()
 	var out bytes.Buffer
-	c, err := Prompt(PromptOptions{User: "sean", OS: goos, FDA: fda, In: strings.NewReader(in), Out: &out})
+	c, err := Prompt(PromptOptions{User: "alex", OS: goos, FDA: fda, In: strings.NewReader(in), Out: &out})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,7 +52,7 @@ func TestPrompt(t *testing.T) {
 		t.Fatalf("invalid then no: %v %q", c, out)
 	}
 	_, out = prompt(t, "\n", "linux", "")
-	for _, s := range []string{"running as sean (not administrator)", "Restart as administrator (sudo will ask", "Continue as sean", "Elevate? [y/N]"} {
+	for _, s := range []string{"running as alex (not administrator)", "Restart as administrator (sudo will ask", "Continue as alex", "Elevate? [y/N]"} {
 		if !strings.Contains(out, s) {
 			t.Errorf("missing %q in %q", s, out)
 		}

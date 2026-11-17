@@ -7,7 +7,7 @@ import { computeLayout, DEFAULT_LAYOUT, IT_DIR, IT_REST, squarify } from "../src
 function store(n = 8000): TreeStore {
   const g = generateTree(n, { root: "home", seed: 3 });
   const s = new TreeStore();
-  s.reset({ scanId: 1, path: "/Users/sean", rootName: "sean", volume: null, opts: {} });
+  s.reset({ scanId: 1, path: "/Users/alex", rootName: "alex", volume: null, opts: {} });
   s.ingest({ scanId: 1, records: g.records, wireBytes: 0 });
   return s;
 }

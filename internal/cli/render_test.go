@@ -13,7 +13,7 @@ import (
 
 func TestPlainRendering(t *testing.T) {
 	var out, errb bytes.Buffer
-	r := New(Options{Out: &out, Err: &errb, Version: "v1", User: "sean", GOOS: "linux", NoColor: true})
+	r := New(Options{Out: &out, Err: &errb, Version: "v1", User: "alex", GOOS: "linux", NoColor: true})
 	r.Header()
 	r.Event(session.Event{Kind: session.EvLinkReady, URL: "https://diskspace.cc/s/abc#key", LocalURL: "http://127.0.0.1:1/s/abc#key"})
 	r.Event(session.Event{Kind: session.EvViewerConnected, Code: "123 456"})
@@ -23,7 +23,7 @@ func TestPlainRendering(t *testing.T) {
 	r.Close()
 	s := out.String()
 	for _, want := range []string{"diskspace.cc v1", "Open this link in your browser:", "https://diskspace.cc/s/abc#key",
-		"Local link", "Running as sean (standard user)", "verification code 123 456", "Scanning /x", "Scan done in 14.2 s", "1.2M files"} {
+		"Local link", "Running as alex (standard user)", "verification code 123 456", "Scanning /x", "Scan done in 14.2 s", "1.2M files"} {
 		if !strings.Contains(s, want) {
 			t.Errorf("missing %q in:\n%s", want, s)
 		}

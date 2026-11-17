@@ -5,7 +5,7 @@ import { CHILD_FLAG, DIR_FLAG, type DirRec, type NodeRecord, type ScanStarted } 
 import { KIND_BUCKET, KIND_DIR, KIND_FILE, KIND_SYNTH, TreeStore } from "../src/store/tree";
 import { formatBytes, formatPercent } from "../src/store/format";
 
-const started = (scanId = 1): ScanStarted => ({ scanId, path: "/Users/sean", rootName: "sean", volume: null, opts: {} });
+const started = (scanId = 1): ScanStarted => ({ scanId, path: "/Users/alex", rootName: "alex", volume: null, opts: {} });
 const dir = (id: number, p: Partial<DirRec> = {}): DirRec => ({ k: 1, id, flags: 0, ownAlloc: 0, ownApparent: 0, ownFiles: 0, entryErrors: 0, firstChildId: 0, dirs: [], files: [], ...p, totalDirs: p.totalDirs ?? p.dirs?.length ?? 0 });
 const feed = (s: TreeStore, records: NodeRecord[], scanId = 1) => s.ingest({ scanId, records, wireBytes: 0 });
 const byName = (s: TreeStore, parent: number, name: string) => {
