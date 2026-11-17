@@ -294,6 +294,19 @@ func (r *Renderer) Event(ev session.Event) {
 			}
 			r.mu.Unlock()
 		}
+	case session.EvScanPaused:
+		msg := "Paused · " + ev.Path
+		if ev.Totals != nil {
+			msg += " · " + FormatCount(ev.Totals.Files) + " files"
+		}
+		msg += " (resume in the browser)"
+		r.mu.Lock()
+		r.setStatusLocked(msg, true)
+		r.mu.Unlock()
+	case session.EvScanResumed:
+		r.mu.Lock()
+		r.setStatusLocked("Scanning "+ev.Path+" …", true)
+		r.mu.Unlock()
 	case session.EvScanDone:
 		msg := fmt.Sprintf("Scan done in %.1f s", float64(ev.Ms)/1000)
 		if ev.Totals != nil {

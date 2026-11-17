@@ -174,6 +174,10 @@ func TestStartReadyRotateShutdown(t *testing.T) {
 	waitFor(t, ch, func(s Snapshot) bool { return s.Code == "123 456" })
 	_ = child.Send(ipc.Msg{T: ipc.TScan, State: "started", Path: "/tmp/x"})
 	waitFor(t, ch, func(s Snapshot) bool { return s.Scan == "started" && s.ScanPath == "/tmp/x" })
+	_ = child.Send(ipc.Msg{T: ipc.TScan, State: "paused", Path: "/tmp/x"})
+	waitFor(t, ch, func(s Snapshot) bool { return s.Scan == "paused" })
+	_ = child.Send(ipc.Msg{T: ipc.TScan, State: "resumed", Path: "/tmp/x"})
+	waitFor(t, ch, func(s Snapshot) bool { return s.Scan == "started" })
 
 	if err := a.Rotate(); err != nil {
 		t.Fatal(err)

@@ -45,7 +45,7 @@ type Snapshot struct {
 	LocalURL    string `json:"localUrl"`
 	Viewer      string `json:"viewer"` // "" | connected | disconnected | superseded
 	Code        string `json:"code"`
-	Scan        string `json:"scan"` // "" | started | done | canceled
+	Scan        string `json:"scan"` // "" | started | paused | done | canceled
 	ScanPath    string `json:"scanPath"`
 	Notice      string `json:"notice"`  // last non-fatal agent error
 	Message     string `json:"message"` // phaseError detail

@@ -228,6 +228,10 @@ func ipcEvent(m ipc.Msg) (session.Event, bool) {
 			return session.Event{Kind: session.EvScanDone, Path: m.Path}, true
 		case "canceled":
 			return session.Event{Kind: session.EvScanCanceled, Path: m.Path}, true
+		case "paused":
+			return session.Event{Kind: session.EvScanPaused, Path: m.Path}, true
+		case "resumed":
+			return session.Event{Kind: session.EvScanResumed, Path: m.Path}, true
 		}
 	case ipc.TError:
 		return session.Event{Kind: session.EvError, Message: m.Message}, true
@@ -252,6 +256,10 @@ func eventIPC(ev session.Event, elevated bool, fda string) (ipc.Msg, bool) {
 		return ipc.Msg{T: ipc.TScan, State: "done", Path: ev.Path}, true
 	case session.EvScanCanceled:
 		return ipc.Msg{T: ipc.TScan, State: "canceled", Path: ev.Path}, true
+	case session.EvScanPaused:
+		return ipc.Msg{T: ipc.TScan, State: "paused", Path: ev.Path}, true
+	case session.EvScanResumed:
+		return ipc.Msg{T: ipc.TScan, State: "resumed", Path: ev.Path}, true
 	case session.EvScanError:
 		return ipc.Msg{T: ipc.TError, Message: "scan failed: " + ev.Message}, true
 	case session.EvError:

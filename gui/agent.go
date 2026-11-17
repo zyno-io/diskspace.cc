@@ -258,6 +258,9 @@ func (a *App) apply(p *proc, m ipc.Msg) {
 			}
 		case ipc.TScan:
 			s.Scan, s.ScanPath = m.State, m.Path
+			if m.State == "resumed" {
+				s.Scan = "started"
+			}
 		case ipc.TError:
 			s.Notice = m.Message
 		}
