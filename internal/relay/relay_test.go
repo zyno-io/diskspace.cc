@@ -470,6 +470,37 @@ func TestViewerConnectRatePerSession(t *testing.T) {
 	expectClose(t, v, CloseRateLimit)
 }
 
+// One client exhausting a session's viewer-connect budget must not lock out
+// a different client (the key holder).
+func TestViewerConnectRateIsPerClient(t *testing.T) {
+	e := newEnv(t, Limits{ViewerConnsPerMinSess: 2, UpgradesPerMinPerIP: 100, MaxPendingViewers: 50})
+	e.rs.cfg.TrustProxy = true
+	sid := newSID()
+	e.register(sid, "a")
+	dialFrom := func(ip string) *websocket.Conn {
+		h := http.Header{}
+		h.Set("X-Forwarded-For", ip)
+		c, _, err := websocket.Dial(ctxT(), e.url+"/v1/view?sid="+sid, &websocket.DialOptions{HTTPHeader: h})
+		if err != nil {
+			t.Fatal(err)
+		}
+		e.mu.Lock()
+		e.cs = append(e.cs, c)
+		e.mu.Unlock()
+		return c
+	}
+	dialFrom("203.0.113.9")
+	dialFrom("203.0.113.9")
+	expectClose(t, dialFrom("203.0.113.9"), CloseRateLimit)
+	// the key holder on another address still gets a pending slot
+	v := dialFrom("198.51.100.7")
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	if _, _, err := v.Read(ctx); websocket.CloseStatus(err) == CloseRateLimit {
+		t.Fatalf("other client was rate limited: %v", err)
+	}
+}
+
 func TestPendingCap(t *testing.T) {
 	e := newEnv(t, Limits{MaxPendingViewers: 2})
 	sid := newSID()

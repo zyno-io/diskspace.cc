@@ -309,7 +309,9 @@ func (s *Server) handleView(w http.ResponseWriter, r *http.Request) {
 		closeConn(conn, CloseUnknownSID, "unknown session")
 		return
 	}
-	if !sess.viewerRate.allow("") {
+	// Keyed per client so someone who only knows the sid can't spend the
+	// key holder's connect budget.
+	if !sess.viewerRate.allow(clientIP(r, s.cfg.TrustProxy)) {
 		closeConn(conn, CloseRateLimit, "too many viewer connects")
 		return
 	}
