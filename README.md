@@ -45,6 +45,7 @@ diskspace [flags] [path]
   --idle 30m        exit after this long without a browser (0 = never)
   --relay URL       use a self-hosted relay
   --threads N       scanner workers (default: automatic)
+  --priority P      scanner CPU and disk priority: low (default) or normal
 ```
 
 ## How it works

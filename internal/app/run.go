@@ -17,6 +17,7 @@ import (
 	"github.com/zyno-io/diskspace.cc/internal/cli"
 	"github.com/zyno-io/diskspace.cc/internal/elevate"
 	"github.com/zyno-io/diskspace.cc/internal/ipc"
+	"github.com/zyno-io/diskspace.cc/internal/prio"
 	"github.com/zyno-io/diskspace.cc/internal/session"
 )
 
@@ -42,6 +43,9 @@ func Run(args []string, version, defaultRelay string, stdout, stderr io.Writer) 
 	if err := o.Resolve(os.Getwd, invokingHome); err != nil {
 		fmt.Fprintln(stderr, "diskspace:", err)
 		return 2
+	}
+	if err := prio.ApplyProcess(o.PriorityLevel()); err != nil {
+		fmt.Fprintln(os.Stderr, "diskspace: could not lower priority:", err)
 	}
 	if o.AgentMode {
 		return runAgentMode(o, version)
@@ -83,6 +87,7 @@ func sessionConfig(o *Options, version string) session.Config {
 		FDA:       string(elevate.ProbeFDA()),
 		Version:   version,
 		Threads:   o.Threads,
+		Priority:  o.PriorityLevel(),
 		Idle:      o.Idle,
 	}
 	if o.Cwd != "" {

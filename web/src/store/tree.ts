@@ -54,6 +54,12 @@ export class TreeStore {
   fStart = new Int32Array(0);
   fCount = new Int32Array(0);
   bucket = new Int32Array(0);
+  /**
+   * Mutation stamp per node (store.version + 1 at the time of the change). Stamped
+   * on insert and on every ancestor walk, so a dir's cached child ordering is
+   * stale iff touched[dir] > the version it was sorted at.
+   */
+  touched = new Int32Array(0);
   names: string[] = [];
 
   private wire2idx = new Int32Array(0);
@@ -107,10 +113,25 @@ export class TreeStore {
   // ---- ingest ---------------------------------------------------------------
 
   ingest(b: NodeBatch): void {
-    if (b.scanId !== this.scanId || this.root < 0) return;
+    this.applySlice(b, 0, Infinity);
+  }
+
+  /**
+   * Apply records [from, …) of a batch, stopping once performance.now() passes
+   * `deadline` (checked every 64 records, so at least 64 are always applied).
+   * Returns the index to resume from; === records.length when the batch is done.
+   */
+  applySlice(b: NodeBatch, from: number, deadline: number, now: () => number = () => performance.now()): number {
     const recs = b.records;
-    for (let i = 0; i < recs.length; i++) this.apply(recs[i]);
+    if (b.scanId !== this.scanId || this.root < 0) return recs.length;
+    let i = from;
+    let c = 0;
+    while (i < recs.length) {
+      this.apply(recs[i++]);
+      if ((++c & 63) === 0 && i < recs.length && now() >= deadline) break;
+    }
     this.version++;
+    return i;
   }
 
   private apply(r: NodeRecord): void {
@@ -223,6 +244,7 @@ export class TreeStore {
     // each filled slot stops being a placeholder: a real child keeps the pending
     // count (now its own), a flagged one resolves it
     this.unsettled[idx] -= nd - real;
+    this.touched[idx] = this.version + 1;
     if (real) this.addUp(idx, 0, 0, 0, real);
     if (nd - real > 0 && this.unsettled[idx] === 0) this.settle(idx);
     this.replayOrphans(r.firstChildId, nd);
@@ -238,7 +260,10 @@ export class TreeStore {
 
   private applyFoldEnd(idx: number, _r: FoldEndRec): void {
     if (!(this.flags[idx] & DIR_FLAG.FOLDED_CHILDREN)) return;
-    if (this.unsettled[idx] > 0 && --this.unsettled[idx] === 0) this.settle(idx);
+    if (this.unsettled[idx] > 0 && --this.unsettled[idx] === 0) {
+      this.touched[idx] = this.version + 1;
+      this.settle(idx);
+    }
   }
 
   /** replace the listed files of a dir with a full DIR_FILES listing */
@@ -246,6 +271,7 @@ export class TreeStore {
     if (df.scanId !== this.scanId) return false;
     const idx = df.dirId < this.wire2idx.length ? this.wire2idx[df.dirId] : -1;
     if (idx < 0) return false;
+    this.touched[idx] = this.version + 1;
     const fs = this.fStart[idx];
     for (let i = 0; i < this.fCount[idx]; i++) this.kind[fs + i] = KIND_NONE;
     this.listedAlloc[idx] = 0;
@@ -295,7 +321,9 @@ export class TreeStore {
   }
 
   private addUp(idx: number, a: number, p: number, f: number, dirs: number): void {
+    const stamp = this.version + 1;
     for (let i = idx; i >= 0; i = this.parent[i]) {
+      this.touched[i] = stamp;
       this.totAlloc[i] += a;
       this.totApparent[i] += p;
       this.totFiles[i] += f;
@@ -306,6 +334,7 @@ export class TreeStore {
   private settle(idx: number): void {
     for (let p = this.parent[idx]; p >= 0; p = this.parent[p]) {
       if (--this.unsettled[p] !== 0) break;
+      this.touched[p] = this.version + 1; // row shows a "pending" mark until settled
     }
   }
 
@@ -315,7 +344,10 @@ export class TreeStore {
   setSynthetic(bytes: number): void {
     if (this.root < 0) return;
     if (bytes <= 0) {
-      if (this.synth >= 0) this.totAlloc[this.synth] = this.ownAlloc[this.synth] = 0;
+      if (this.synth >= 0) {
+        this.totAlloc[this.synth] = this.ownAlloc[this.synth] = 0;
+        this.touched[this.root] = this.touched[this.synth] = this.version + 1;
+      }
       return;
     }
     if (this.synth < 0) {
@@ -325,6 +357,7 @@ export class TreeStore {
     }
     this.ownAlloc[this.synth] = this.totAlloc[this.synth] = bytes;
     this.ownApparent[this.synth] = this.totApparent[this.synth] = bytes;
+    this.touched[this.root] = this.touched[this.synth] = this.version + 1;
     this.version++;
   }
 
@@ -458,6 +491,8 @@ export class TreeStore {
     this.unsettled[i] = 0;
     this.dStart[i] = this.dCount[i] = this.dFilled[i] = this.fStart[i] = this.fCount[i] = 0;
     this.bucket[i] = -1;
+    this.touched[i] = this.version + 1;
+    if (parent >= 0) this.touched[parent] = this.version + 1;
     this.names[i] = name;
   }
 
@@ -477,7 +512,7 @@ export class TreeStore {
     const s = this.n;
     if (s + k > this.cap) {
       let c = this.cap;
-      while (c < s + k) c *= 2;
+      while (c < s + k) c = Math.ceil(c * 1.5);
       this.grow(c);
     }
     this.n += k;
@@ -512,6 +547,7 @@ export class TreeStore {
     this.fStart = g(this.fStart);
     this.fCount = g(this.fCount);
     this.bucket = g(this.bucket);
+    this.touched = g(this.touched);
     this.cap = c;
   }
 }

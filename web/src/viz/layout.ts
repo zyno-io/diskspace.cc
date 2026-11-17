@@ -221,26 +221,38 @@ function nest(store: TreeStore, parent: number, x: number, y: number, w: number,
     }
   }
   if (total <= 0) return;
-  // sort by size, quantised to ~9% bands with id as tie-break: siblings of
+  // Order is by size quantised to ~9% bands with id as tie-break: siblings of
   // similar size keep their order while a scan streams in, so parcels don't
-  // swap places on every relayout
-  const band = sz.map((v) => Math.floor(Math.log2(v) * 8));
-  const order = ids.map((_, i) => i).sort((a, b) => band[b] - band[a] || ids[a] - ids[b]);
+  // swap places on every relayout. Children are kept until the first one (in
+  // that order) is too small to draw; it and everything after it become one
+  // REST parcel. Find that cut point in one O(k) pass so only kept children
+  // are sorted: in band order the cut falls in the highest band holding a
+  // too-small child, at the lowest id there that is too small.
   const area = w * h;
   const scale = area / total;
   const minArea = o.minPx * o.minPx * 1.6;
-
-  // keep children until they get too small; the tail becomes one REST parcel
-  let keep = 0;
-  let restSum = 0;
-  for (let i = 0; i < order.length; i++) {
-    const a = sz[order[i]] * scale;
-    if (a < minArea) {
-      for (let j = i; j < order.length; j++) restSum += sz[order[j]];
-      break;
+  const nAll = ids.length;
+  const band = new Array<number>(nAll);
+  let cutBand = -Infinity;
+  let cutId = Infinity;
+  for (let i = 0; i < nAll; i++) {
+    const bd = Math.floor(Math.log2(sz[i]) * 8);
+    band[i] = bd;
+    if (sz[i] * scale < minArea) {
+      if (bd > cutBand) {
+        cutBand = bd;
+        cutId = ids[i];
+      } else if (bd === cutBand && ids[i] < cutId) cutId = ids[i];
     }
-    keep++;
   }
+  const order: number[] = [];
+  let restSum = 0;
+  for (let i = 0; i < nAll; i++) {
+    if (band[i] > cutBand || (band[i] === cutBand && ids[i] < cutId)) order.push(i);
+    else restSum += sz[i];
+  }
+  order.sort((a, b) => band[b] - band[a] || ids[a] - ids[b]);
+  const keep = order.length;
   const m = keep + (restSum > 0 ? 1 : 0);
   const areas = new Float64Array(m);
   const nodeOf = new Int32Array(m);

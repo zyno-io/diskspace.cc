@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/zyno-io/diskspace.cc/internal/elevate"
+	"github.com/zyno-io/diskspace.cc/internal/prio"
 	"github.com/zyno-io/diskspace.cc/internal/proto"
 	"github.com/zyno-io/diskspace.cc/internal/scan"
 	"github.com/zyno-io/diskspace.cc/internal/session/crypto"
@@ -74,6 +75,7 @@ type Config struct {
 	FDA       string // granted | denied | "" (unknown / not macOS)
 	Version   string
 	Threads   int
+	Priority  prio.Level    // scanner CPU/IO priority (zero = normal)
 	Idle      time.Duration // exit Run after this long with no viewer; 0 disables
 	LogCap    int64         // scan log cap in compressed bytes (default 256 MiB)
 	Logger    *slog.Logger
@@ -456,6 +458,9 @@ func (a *Agent) startScan(opts scan.Options) (*scanRun, error) {
 	defer a.scanMu.Unlock()
 	if opts.Threads == 0 {
 		opts.Threads = a.cfg.Threads
+	}
+	if opts.Priority == prio.Normal {
+		opts.Priority = a.cfg.Priority
 	}
 	if a.cfg.Root != "" {
 		opts.CrossMounts = false

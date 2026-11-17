@@ -4,7 +4,7 @@
 // statistics only (no file names). Use it on synthetic trees from
 // scripts/mktree or on a dedicated test machine.
 //
-//	go run ./scripts/scanbench [-cross] [-threads N] [-folds N] <dir>
+//	go run ./scripts/scanbench [-cross] [-threads N] [-priority low|normal] [-folds N] <dir>
 //
 // -folds N prints the N largest folded subtrees by path (opt-in, since it
 // prints directory names).
@@ -20,6 +20,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/zyno-io/diskspace.cc/internal/prio"
 	"github.com/zyno-io/diskspace.cc/internal/proto"
 	"github.com/zyno-io/diskspace.cc/internal/scan"
 )
@@ -27,10 +28,11 @@ import (
 func main() {
 	cross := flag.Bool("cross", false, "cross mount points")
 	threads := flag.Int("threads", 0, "worker threads (0 = default)")
+	priority := flag.String("priority", "normal", "low or normal (CPU/IO priority)")
 	folds := flag.Int("folds", 0, "print the N largest folded subtrees (prints paths)")
 	flag.Parse()
 	if flag.NArg() != 1 {
-		fmt.Fprintln(os.Stderr, "usage: scanbench [-cross] [-threads N] <dir>")
+		fmt.Fprintln(os.Stderr, "usage: scanbench [-cross] [-threads N] [-priority low|normal] <dir>")
 		os.Exit(2)
 	}
 	root, err := filepath.Abs(flag.Arg(0))
@@ -38,7 +40,13 @@ func main() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	s, err := scan.New(scan.Options{Root: root, CrossMounts: *cross, Threads: *threads})
+	lvl, ok := prio.Parse(*priority)
+	if !ok {
+		fmt.Fprintln(os.Stderr, "scanbench: -priority must be low or normal")
+		os.Exit(2)
+	}
+	_ = prio.ApplyProcess(lvl)
+	s, err := scan.New(scan.Options{Root: root, CrossMounts: *cross, Threads: *threads, Priority: lvl})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)

@@ -44,8 +44,10 @@ export function Wordmark({ stretch, size, as = "div", href, label, fit }: Wordma
     const reduced = prefersReducedMotion();
     let cur = stretch() ?? 100;
     let raf = 0;
+    let poll: ReturnType<typeof setTimeout> | undefined;
     let last = -1;
     const tick = (now: number) => {
+      raf = 0;
       const target = stretch();
       let v: number;
       if (reduced) v = target ?? 100;
@@ -60,10 +62,23 @@ export function Wordmark({ stretch, size, as = "div", href, label, fit }: Wordma
         el.style.fontStretch = `${r}%`;
         last = r;
       }
+      if (target !== null && Math.abs(target - v) < 0.05) {
+        // converged: stop the frame loop, watch for a new target at a low rate
+        cur = target;
+        poll = setTimeout(function watch() {
+          const t = stretch();
+          if (t !== null && Math.abs(t - cur) < 0.05) poll = setTimeout(watch, 250);
+          else raf = requestAnimationFrame(tick);
+        }, 250);
+        return;
+      }
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf);
+    return () => {
+      cancelAnimationFrame(raf);
+      clearTimeout(poll);
+    };
   }, [stretch]);
   const cls = `wm wm-${size}`;
   const inner = (

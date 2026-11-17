@@ -14,6 +14,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"time"
+
+	"github.com/zyno-io/diskspace.cc/internal/prio"
 )
 
 // FallbackRelay is used when no relay is baked in with -X.
@@ -35,6 +37,7 @@ type Options struct {
 	Open        bool
 	Idle        time.Duration
 	Threads     int
+	Priority    string // low (default) | normal
 	ParentPID   int
 	ShowVer     bool
 	Quiet       bool
@@ -62,6 +65,7 @@ func newFlagSet(o *Options, defaultRelay string, out io.Writer) *flag.FlagSet {
 	fs.StringVar(&o.Home, "home", "", "home `directory` to offer")
 	fs.BoolVar(&o.Open, "open", false, "open the link in a browser (ignored as administrator)")
 	fs.DurationVar(&o.Idle, "idle", 30*time.Minute, "exit after this long without a viewer (0 disables)")
+	fs.StringVar(&o.Priority, "priority", "low", "scanner CPU and disk priority: `low` or normal")
 	fs.IntVar(&o.Threads, "threads", 0, "scanner worker `count` (default: automatic)")
 	fs.IntVar(&o.ParentPID, "parent-pid", 0, "exit when this process exits")
 	fs.BoolVar(&o.ShowVer, "version", false, "print version and exit")
@@ -112,6 +116,9 @@ func ParseArgs(args []string, defaultRelay string, out io.Writer) (*Options, err
 	}
 	if o.Elevate && o.NoElevate {
 		return nil, errors.New("--elevate and --no-elevate are mutually exclusive")
+	}
+	if _, ok := prio.Parse(o.Priority); !ok {
+		return nil, fmt.Errorf("--priority must be low or normal, not %q", o.Priority)
 	}
 	if o.Idle < 0 {
 		return nil, errors.New("--idle must not be negative")
@@ -169,6 +176,12 @@ func (o *Options) Resolve(getwd func() (string, error), homeDir func() string) e
 	return nil
 }
 
+// PriorityLevel is the parsed --priority (low when unset).
+func (o *Options) PriorityLevel() prio.Level {
+	l, _ := prio.Parse(o.Priority)
+	return l
+}
+
 // invokingHome is the home of the real user when running under sudo.
 func invokingHome() string {
 	if su := os.Getenv("SUDO_USER"); su != "" && os.Geteuid() == 0 {
@@ -205,6 +218,9 @@ func ElevatedArgs(o *Options, parentPID int, relay string) []string {
 	args = append(args, "--idle", o.Idle.String())
 	if o.Threads > 0 {
 		args = append(args, "--threads", strconv.Itoa(o.Threads))
+	}
+	if l, _ := prio.Parse(o.Priority); l == prio.Normal {
+		args = append(args, "--priority", "normal") // low is the child default
 	}
 	if o.Quiet {
 		args = append(args, "--quiet")

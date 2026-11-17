@@ -102,7 +102,7 @@ func (p *proc) stop(grace time.Duration) {
 // agentOptions are the GUI agent's flags: no current folder, the user's home,
 // never idle out, and serve the local viewer for "Open here".
 func (a *App) agentOptions() *app.Options {
-	return &app.Options{NoCwd: true, Home: a.home, Local: true, Idle: 0}
+	return &app.Options{NoCwd: true, Home: a.home, Local: true, Idle: 0, Priority: "low"}
 }
 
 // run starts one agent generation and pumps its IPC messages until it exits.
