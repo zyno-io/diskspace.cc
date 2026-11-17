@@ -81,6 +81,9 @@ jobs:
           args: release --clean --skip=publish,docker
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Several tags can point at one commit (v0.1.0-rc.1 and v0.1.0);
+          # git sorts the -rc tag last, so name the tag that triggered us.
+          GORELEASER_CURRENT_TAG: ${{ github.ref_name }}
 
       # Credentials are written only after goreleaser: its before-hook runs
       # npm install/build, and no third-party code may run once secrets are on disk.
