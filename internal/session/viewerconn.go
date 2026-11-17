@@ -173,6 +173,7 @@ func (a *Agent) serveViewer(ws *websocket.Conn, g *generation) {
 	comp := proto.NewStreamCompressor(hello.Caps.ZstdStream)
 	defer comp.Close()
 	snd := newSender(ws, ciph, comp)
+	snd.scanState = hello.Caps.ScanState
 	snd.onOverflow = func() { v.fail(closeRateLimit, "control queue overflow") }
 	if !a.activate(v, snd) {
 		return
@@ -218,7 +219,7 @@ func (a *Agent) serveViewer(ws *websocket.Conn, g *generation) {
 				return
 			}
 			snd.addCredit(m.N)
-		case proto.MsgGetRoots, proto.MsgBrowse, proto.MsgScanStart, proto.MsgScanCancel, proto.MsgDirFilesReq:
+		case proto.MsgGetRoots, proto.MsgBrowse, proto.MsgScanStart, proto.MsgScanCancel, proto.MsgScanPause, proto.MsgDirFilesReq:
 			select {
 			case v.cmds <- cmd{typ, payload}:
 			default:
@@ -265,6 +266,9 @@ func (a *Agent) activate(v *viewerConn, snd *sender) bool {
 	run := a.cur
 	if run != nil {
 		info.Scan = &proto.ScanRef{ID: run.id, State: run.getState()}
+		if paused, _ := run.pauseState(); paused && snd.scanState {
+			info.Scan.Paused = true
+		}
 	}
 	snd.pushJSON(proto.MsgAgentInfo, info)
 	if run != nil {
@@ -283,6 +287,10 @@ func (a *Agent) activate(v *viewerConn, snd *sender) bool {
 			osnd.bye(proto.ByeSuperseded)
 		}
 		a.emit(Event{Kind: EvViewerSuperseded, Code: old.code})
+	}
+	// A viewer that cannot show or end a pause would leave the scan stuck.
+	if run != nil && !snd.scanState {
+		a.resumeIfPaused(run)
 	}
 	a.emit(Event{Kind: EvViewerConnected, Code: v.code})
 	return true
@@ -371,6 +379,14 @@ func (v *viewerConn) handle(c cmd) {
 			return
 		}
 		a.cancelScan(m.ScanID)
+
+	case proto.MsgScanPause:
+		var m proto.ScanPause
+		if json.Unmarshal(c.payload, &m) != nil {
+			v.fail(closeProtocol, "protocol error")
+			return
+		}
+		a.setPaused(m.ScanID, m.Paused)
 
 	case proto.MsgDirFilesReq:
 		var m proto.DirFilesReq

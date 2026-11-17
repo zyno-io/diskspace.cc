@@ -281,14 +281,6 @@ func (r *logReader) advance() {
 	r.l.mu.Unlock()
 }
 
-// skipToEnd positions the reader after every entry (used for canceled scans).
-func (r *logReader) skipToEnd() {
-	r.l.mu.Lock()
-	r.cursor.Store(int64(r.l.count))
-	r.l.trimLocked()
-	r.l.mu.Unlock()
-}
-
 // ---- batcher ----
 
 // runBatcher consumes scanner records, packs them into NODES bodies (64 KiB or
@@ -343,6 +335,13 @@ func (l *scanLog) runBatcher(recs <-chan proto.Record, tooBig func()) {
 			flush()
 		}
 	}
+}
+
+// snapshot returns the entry count and whether the log has finished, atomically.
+func (l *scanLog) snapshot() (count int, ended bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.count, l.end != nil
 }
 
 // endNow returns the terminal message if the log is finished.

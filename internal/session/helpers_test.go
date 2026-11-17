@@ -525,3 +525,31 @@ func mkWideTree(t *testing.T, root string, parents, kids int) {
 		}
 	}
 }
+
+// connectViewerCaps is connectViewer with explicit capabilities in CLIENT_HELLO.
+func connectViewerCaps(t *testing.T, wsBase string, sec *crypto.Secret, caps proto.ClientCaps) *testViewer {
+	t.Helper()
+	ctx := ctx10(t)
+	ws, err := dialRaw(ctx, wsBase+"/v1/view?sid="+sec.SIDString())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ws.CloseNow() })
+	ciph, keys, err := handshake(ctx, ws, sec)
+	if err != nil {
+		t.Fatalf("handshake: %v", err)
+	}
+	v := &testViewer{t: t, ws: ws, ciph: ciph, keys: keys, zd: newZdec(t), code: keys.Code}
+	v.frames = make(chan frameOrErr, 4096)
+	go func() {
+		for {
+			_, ct, err := ws.Read(context.Background())
+			v.frames <- frameOrErr{ct, err}
+			if err != nil {
+				return
+			}
+		}
+	}()
+	v.send(proto.MsgClientHello, proto.ClientHello{Proto: proto.ProtoVersion, UA: "test", Caps: caps})
+	return v
+}

@@ -65,6 +65,8 @@ type sender struct {
 	rd            *logReader
 	replayPending bool
 	replayUntil   int
+	replayWantEnd bool // the log had ended at attach: REPLAY_DONE follows the end message
+	scanState     bool // the viewer advertised caps.scanState
 	endSent       bool
 	lastProgress  time.Time
 }
@@ -233,8 +235,14 @@ func (s *sender) attach(run *scanRun, replay bool) {
 		}
 	} else {
 		msgs = append(msgs, run.startedBody)
+		if paused, elapsed := run.pauseState(); paused && s.scanState {
+			// The paused state is part of this attach: superseded with it.
+			b, _ := proto.EncodeMsg(proto.MsgScanState, proto.ScanState{ScanID: run.id, Paused: true, ElapsedMs: elapsed})
+			msgs = append(msgs, b)
+		}
 		if replay {
-			s.replayPending, s.replayUntil = true, run.log.countNow()
+			s.replayPending = true
+			s.replayUntil, s.replayWantEnd = run.log.snapshot()
 		}
 	}
 	for _, m := range msgs {
@@ -314,7 +322,7 @@ func (s *sender) pick() pick {
 		s.mu.Unlock()
 		return pick{closing: true}
 	}
-	rd, credit, replayPending, replayUntil, endSent := s.rd, s.credit, s.replayPending, s.replayUntil, s.endSent
+	rd, credit, replayPending, replayUntil, wantEnd, endSent := s.rd, s.credit, s.replayPending, s.replayUntil, s.replayWantEnd, s.endSent
 	prog := s.progress
 	if credit <= 0 || endSent {
 		s.progress, prog = nil, nil // out of credit (droppable) or scan over
@@ -324,15 +332,9 @@ func (s *sender) pick() pick {
 
 	var p pick
 	if rd != nil {
-		if e := rd.l.endNow(); e != nil && !e.Done && !endSent {
-			// canceled / failed scan: deliver SCAN_ENDED promptly, skip the rest.
-			rd.skipToEnd()
-			s.mu.Lock()
-			s.endSent = true
-			s.mu.Unlock()
-			return pick{body: e.Body}
-		}
-		if replayPending && rd.pos() >= replayUntil {
+		// REPLAY_DONE follows the replayed NODES and, if the scan had already
+		// ended when the viewer attached, the end message too.
+		if replayPending && rd.pos() >= replayUntil && (!wantEnd || endSent) {
 			s.mu.Lock()
 			s.replayPending = false
 			s.mu.Unlock()
