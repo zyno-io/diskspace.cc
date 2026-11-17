@@ -29,6 +29,20 @@ type worker struct {
 
 func (w *worker) emit(r proto.Record) { w.s.out <- r }
 
+// maxChildRecordBytes bounds the encoded subdirectory list of one DirRecord so
+// a single record always fits in a NODES message (1 MiB body limit).
+const maxChildRecordBytes = 768 << 10
+
+// childBytes estimates the encoded size of announced children: name length
+// varint + name + flags varint.
+func childBytes(kids []kid) int {
+	n := 0
+	for i := range kids {
+		n += len(kids[i].name) + 4
+	}
+	return n
+}
+
 // reserveIDs allocates n consecutive ids unless that would exceed MaxDirs.
 func (s *Scanner) reserveIDs(n uint64) (uint64, bool) {
 	for {
@@ -180,6 +194,10 @@ func (w *worker) process(j job) {
 		fold := false
 		if nDesc > 0 && int(j.depth)+1 > opts.MaxDepth {
 			fold = true
+		} else if childBytes(w.kids) > maxChildRecordBytes {
+			// Announcing this many subdirectories would exceed the 1 MiB
+			// protocol message limit; report the subtree as folded totals.
+			fold = nDesc > 0
 		} else if f, ok := s.reserveIDs(uint64(n)); ok {
 			first, announce = f, true
 		} else if nDesc > 0 {

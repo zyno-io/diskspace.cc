@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -513,6 +514,45 @@ func TestFoldMaxDirs(t *testing.T) {
 		r.compare(t, ref)
 		if len(r.foldTargets) == 0 || r.foldDirs == 0 || r.stats.Folded != r.foldDirs {
 			t.Fatalf("no folding happened: targets=%d folded=%d stat=%d", len(r.foldTargets), r.foldDirs, r.stats.Folded)
+		}
+	}
+}
+
+// A directory with so many subdirectories that announcing them would exceed
+// the protocol's per-message limit must fold them instead of failing.
+func TestFoldOversizeChildList(t *testing.T) {
+	root := t.TempDir()
+	wide := filepath.Join(root, "wide")
+	name := strings.Repeat("n", 240)
+	n := maxChildRecordBytes/(len(name)+8) + 200
+	for i := 0; i < n; i++ {
+		d := filepath.Join(wide, fmt.Sprintf("%s%06d", name, i))
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if i%500 == 0 {
+			if err := os.WriteFile(filepath.Join(d, "f"), make([]byte, 5000), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	ref := refWalk(t, root)
+	opts := Options{Root: root, Threads: 8}
+	r := runScan(t, opts)
+	r.verify(t, r.s.opts)
+	r.compare(t, ref)
+	if len(r.foldTargets) != 1 || r.foldDirs != uint64(n) {
+		t.Fatalf("want 1 fold target with %d dirs, got targets=%d dirs=%d", n, len(r.foldTargets), r.foldDirs)
+	}
+	for _, rec := range r.recs {
+		if d, ok := rec.(*proto.DirRecord); ok {
+			sz := 0
+			for _, c := range d.Dirs {
+				sz += len(c.Name) + 4
+			}
+			if sz > maxChildRecordBytes {
+				t.Fatalf("dir %d announces %d bytes of children", d.ID, sz)
+			}
 		}
 	}
 }
