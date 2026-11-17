@@ -1,0 +1,462 @@
+// SPDX-License-Identifier: MIT
+//
+// Columnar (SoA) scan tree. One internal index per node; wire dir ids are
+// mapped through `wire2idx`. Dirs announced by their parent get a contiguous
+// index block, listed files another, the "other files" bucket a single slot.
+// Every DIR/FOLD record adds its own bytes to all ancestors (O(depth)), so
+// totals are always consistent with what has arrived so far.
+
+import type { DirFiles, DirRec, FileRec, FoldEndRec, FoldRec, NodeBatch, NodeRecord, ScanStarted } from "../protocol/types";
+import { DIR_FLAG } from "../protocol/types";
+
+export const KIND_NONE = 0; // dead slot (replaced file listing)
+export const KIND_DIR = 1;
+export const KIND_FILE = 2;
+export const KIND_BUCKET = 3;
+export const KIND_SYNTH = 4;
+
+export const SYNTH_NAME = "Other volumes, snapshots & unreadable";
+
+/** packed flags: dir flags in bits 0-7, child flags 8-15, file flags 16-23 */
+export const CHILD_SHIFT = 8;
+export const FILE_SHIFT = 16;
+/** set once the dir's own DIR record has been applied */
+export const F_RECORD = 1 << 24;
+
+const INITIAL = 1 << 12;
+
+export class TreeStore {
+  /** number of allocated node slots */
+  n = 0;
+  private cap = 0;
+  kind = new Uint8Array(0);
+  flags = new Uint32Array(0);
+  parent = new Int32Array(0);
+  depth = new Uint16Array(0);
+  wireId = new Int32Array(0);
+  ownAlloc = new Float64Array(0);
+  ownApparent = new Float64Array(0);
+  ownFiles = new Float64Array(0);
+  totAlloc = new Float64Array(0);
+  totApparent = new Float64Array(0);
+  totFiles = new Float64Array(0);
+  totDirs = new Float64Array(0);
+  listedAlloc = new Float64Array(0);
+  listedApparent = new Float64Array(0);
+  listedCount = new Float64Array(0);
+  unsettled = new Int32Array(0);
+  dStart = new Int32Array(0);
+  dCount = new Int32Array(0);
+  fStart = new Int32Array(0);
+  fCount = new Int32Array(0);
+  bucket = new Int32Array(0);
+  names: string[] = [];
+
+  private wire2idx = new Int32Array(0);
+  private orphans = new Map<number, NodeRecord[]>();
+
+  /** bumped on every mutation batch; renderers compare against it */
+  version = 0;
+  scanId = -1;
+  root = -1;
+  synth = -1;
+  rootPath = "";
+  /** dirs whose DIR record says READ_DENIED */
+  deniedDirs = 0;
+
+  constructor() {
+    this.grow(INITIAL);
+  }
+
+  // ---- lifecycle ------------------------------------------------------------
+
+  reset(m: ScanStarted): void {
+    this.n = 0;
+    this.names.length = 0;
+    this.wire2idx.fill(-1);
+    this.orphans.clear();
+    this.scanId = m.scanId;
+    this.rootPath = m.path;
+    this.synth = -1;
+    this.deniedDirs = 0;
+    const r = this.alloc(1);
+    this.initNode(r, KIND_DIR, -1, m.rootName || m.path, 0);
+    this.unsettled[r] = 1;
+    this.mapWire(0, r);
+    this.root = r;
+    this.version++;
+  }
+
+  /** release memory-heavy arrays (e.g. when leaving the results view) */
+  clear(): void {
+    this.n = 0;
+    this.names.length = 0;
+    this.root = -1;
+    this.scanId = -1;
+    this.orphans.clear();
+    this.version++;
+  }
+
+  // ---- ingest ---------------------------------------------------------------
+
+  ingest(b: NodeBatch): void {
+    if (b.scanId !== this.scanId || this.root < 0) return;
+    const recs = b.records;
+    for (let i = 0; i < recs.length; i++) this.apply(recs[i]);
+    this.version++;
+  }
+
+  private apply(r: NodeRecord): void {
+    const wid = r.k === 1 ? r.id : r.targetId;
+    const idx = wid < this.wire2idx.length ? this.wire2idx[wid] : -1;
+    if (idx < 0) {
+      const q = this.orphans.get(wid);
+      if (q) q.push(r);
+      else this.orphans.set(wid, [r]);
+      return;
+    }
+    if (r.k === 1) this.applyDir(idx, r);
+    else if (r.k === 2) this.applyFold(idx, r);
+    else this.applyFoldEnd(idx, r);
+  }
+
+  private applyDir(idx: number, r: DirRec): void {
+    if (this.flags[idx] & F_RECORD) return; // duplicate (replay overlap)
+    this.flags[idx] |= F_RECORD | (r.flags & 0xff);
+    if (r.flags & DIR_FLAG.READ_DENIED) this.deniedDirs++;
+
+    // own bytes → self + ancestors
+    this.ownAlloc[idx] += r.ownAlloc;
+    this.ownApparent[idx] += r.ownApparent;
+    this.ownFiles[idx] += r.ownFiles;
+    this.addUp(idx, r.ownAlloc, r.ownApparent, r.ownFiles, 0);
+
+    const d = this.depth[idx] + 1;
+    let pending = 0;
+    // announced child dirs
+    const nd = r.dirs.length;
+    if (nd > 0) {
+      const s = this.alloc(nd);
+      this.dStart[idx] = s;
+      this.dCount[idx] = nd;
+      let real = 0;
+      for (let i = 0; i < nd; i++) {
+        const c = r.dirs[i];
+        const ci = s + i;
+        this.initNode(ci, KIND_DIR, idx, c.name, d);
+        this.flags[ci] = (c.flags & 0xff) << CHILD_SHIFT;
+        if (c.flags) {
+          // flagged children (other device, excluded, …) never get a record
+          this.flags[ci] |= F_RECORD;
+        } else {
+          this.unsettled[ci] = 1;
+          real++;
+        }
+        this.mapWire(r.firstChildId + i, ci);
+      }
+      pending += real;
+      if (real) this.addUp(idx, 0, 0, 0, real);
+    }
+    this.setFiles(idx, r.files, d);
+    if (r.flags & DIR_FLAG.FOLDED_CHILDREN) pending++;
+
+    this.unsettled[idx] += pending - 1;
+    if (this.unsettled[idx] === 0) this.settle(idx);
+
+    if (nd > 0 && this.orphans.size > 0) {
+      for (let i = 0; i < nd; i++) {
+        const q = this.orphans.get(r.firstChildId + i);
+        if (q) {
+          this.orphans.delete(r.firstChildId + i);
+          for (const o of q) this.apply(o);
+        }
+      }
+    }
+  }
+
+  private applyFold(idx: number, r: FoldRec): void {
+    this.ownAlloc[idx] += r.alloc;
+    this.ownApparent[idx] += r.apparent;
+    this.ownFiles[idx] += r.files;
+    this.addUp(idx, r.alloc, r.apparent, r.files, r.dirs);
+    this.ensureBucket(idx);
+  }
+
+  private applyFoldEnd(idx: number, _r: FoldEndRec): void {
+    if (!(this.flags[idx] & DIR_FLAG.FOLDED_CHILDREN)) return;
+    if (this.unsettled[idx] > 0 && --this.unsettled[idx] === 0) this.settle(idx);
+  }
+
+  /** replace the listed files of a dir with a full DIR_FILES listing */
+  applyDirFiles(df: DirFiles): boolean {
+    if (df.scanId !== this.scanId) return false;
+    const idx = df.dirId < this.wire2idx.length ? this.wire2idx[df.dirId] : -1;
+    if (idx < 0) return false;
+    const fs = this.fStart[idx];
+    for (let i = 0; i < this.fCount[idx]; i++) this.kind[fs + i] = KIND_NONE;
+    this.listedAlloc[idx] = 0;
+    this.listedApparent[idx] = 0;
+    this.listedCount[idx] = 0;
+    this.setFiles(idx, df.files, this.depth[idx] + 1);
+    this.version++;
+    return true;
+  }
+
+  private setFiles(idx: number, files: FileRec[], d: number): void {
+    const nf = files.length;
+    if (nf > 0) {
+      const s = this.alloc(nf);
+      this.fStart[idx] = s;
+      this.fCount[idx] = nf;
+      let la = 0, lp = 0;
+      for (let i = 0; i < nf; i++) {
+        const f = files[i];
+        const fi = s + i;
+        this.initNode(fi, KIND_FILE, idx, f.name, d);
+        this.flags[fi] = (f.flags & 0xff) << FILE_SHIFT;
+        this.ownAlloc[fi] = f.alloc;
+        this.ownApparent[fi] = f.apparent;
+        this.totAlloc[fi] = f.alloc;
+        this.totApparent[fi] = f.apparent;
+        this.ownFiles[fi] = 1;
+        this.totFiles[fi] = 1;
+        la += f.alloc;
+        lp += f.apparent;
+      }
+      this.listedAlloc[idx] += la;
+      this.listedApparent[idx] += lp;
+      this.listedCount[idx] += nf;
+    } else {
+      this.fCount[idx] = 0;
+    }
+    this.ensureBucket(idx);
+  }
+
+  private ensureBucket(idx: number): void {
+    if (this.bucket[idx] >= 0) return;
+    if (this.ownFiles[idx] - this.listedCount[idx] <= 0 && this.ownAlloc[idx] - this.listedAlloc[idx] <= 0) return;
+    const b = this.alloc(1);
+    this.initNode(b, KIND_BUCKET, idx, "", this.depth[idx] + 1);
+    this.bucket[idx] = b;
+  }
+
+  private addUp(idx: number, a: number, p: number, f: number, dirs: number): void {
+    for (let i = idx; i >= 0; i = this.parent[i]) {
+      this.totAlloc[i] += a;
+      this.totApparent[i] += p;
+      this.totFiles[i] += f;
+      this.totDirs[i] += dirs;
+    }
+  }
+
+  private settle(idx: number): void {
+    for (let p = this.parent[idx]; p >= 0; p = this.parent[p]) {
+      if (--this.unsettled[p] !== 0) break;
+    }
+  }
+
+  // ---- synthetic remainder ------------------------------------------------
+
+  /** "Other volumes, snapshots & unreadable" (volume-root scans only) */
+  setSynthetic(bytes: number): void {
+    if (this.root < 0) return;
+    if (bytes <= 0) {
+      if (this.synth >= 0) this.totAlloc[this.synth] = this.ownAlloc[this.synth] = 0;
+      return;
+    }
+    if (this.synth < 0) {
+      this.synth = this.alloc(1);
+      this.initNode(this.synth, KIND_SYNTH, this.root, SYNTH_NAME, 1);
+      this.flags[this.synth] = F_RECORD;
+    }
+    this.ownAlloc[this.synth] = this.totAlloc[this.synth] = bytes;
+    this.ownApparent[this.synth] = this.totApparent[this.synth] = bytes;
+    this.version++;
+  }
+
+  // ---- queries --------------------------------------------------------------
+
+  isSettled(i: number): boolean {
+    return this.unsettled[i] === 0;
+  }
+  rootSettled(): boolean {
+    return this.root >= 0 && this.unsettled[this.root] === 0;
+  }
+  orphanCount(): number {
+    return this.orphans.size;
+  }
+
+  /** allocated size used for layout + sorting */
+  size(i: number): number {
+    const k = this.kind[i];
+    if (k === KIND_BUCKET) {
+      const p = this.parent[i];
+      const v = this.ownAlloc[p] - this.listedAlloc[p];
+      return v > 0 ? v : 0;
+    }
+    if (k === KIND_NONE) return 0;
+    return this.totAlloc[i];
+  }
+  apparent(i: number): number {
+    if (this.kind[i] === KIND_BUCKET) {
+      const p = this.parent[i];
+      const v = this.ownApparent[p] - this.listedApparent[p];
+      return v > 0 ? v : 0;
+    }
+    return this.totApparent[i];
+  }
+  files(i: number): number {
+    if (this.kind[i] === KIND_BUCKET) {
+      const p = this.parent[i];
+      return Math.max(0, this.ownFiles[p] - this.listedCount[p]);
+    }
+    return this.totFiles[i];
+  }
+  dirs(i: number): number {
+    return this.totDirs[i];
+  }
+  name(i: number): string {
+    return this.names[i] ?? "";
+  }
+  isDir(i: number): boolean {
+    return this.kind[i] === KIND_DIR;
+  }
+  dirFlags(i: number): number {
+    return this.flags[i] & 0xff;
+  }
+  childFlags(i: number): number {
+    return (this.flags[i] >>> CHILD_SHIFT) & 0xff;
+  }
+  fileFlags(i: number): number {
+    return (this.flags[i] >>> FILE_SHIFT) & 0xff;
+  }
+  hasRecord(i: number): boolean {
+    return (this.flags[i] & F_RECORD) !== 0;
+  }
+  /** files hidden in the bucket that "Show all files" could reveal */
+  hiddenFiles(i: number): number {
+    return Math.max(0, this.ownFiles[i] - this.listedCount[i]);
+  }
+
+  /** fill `out` with live children of `i` (dirs, files, bucket, synth); returns count */
+  childrenOf(i: number, out: number[]): number {
+    out.length = 0;
+    const ds = this.dStart[i], dc = this.dCount[i];
+    for (let k = 0; k < dc; k++) out.push(ds + k);
+    const fs = this.fStart[i], fc = this.fCount[i];
+    for (let k = 0; k < fc; k++) if (this.kind[fs + k] === KIND_FILE) out.push(fs + k);
+    // a bucket with no files is just the dir's own blocks; not worth a row
+    if (this.bucket[i] >= 0 && this.files(this.bucket[i]) > 0) out.push(this.bucket[i]);
+    if (i === this.root && this.synth >= 0 && this.totAlloc[this.synth] > 0) out.push(this.synth);
+    return out.length;
+  }
+
+  hasChildren(i: number): boolean {
+    return this.dCount[i] > 0 || this.fCount[i] > 0 || (this.bucket[i] >= 0 && this.files(this.bucket[i]) > 0) || (i === this.root && this.synth >= 0);
+  }
+
+  /** children sorted by allocated size desc (fresh array) */
+  sortedChildren(i: number): number[] {
+    const out: number[] = [];
+    this.childrenOf(i, out);
+    const sz = new Float64Array(this.n > 0 ? out.length : 0);
+    for (let k = 0; k < out.length; k++) sz[k] = this.size(out[k]);
+    const order = out.map((_, k) => k);
+    order.sort((a, b) => sz[b] - sz[a] || a - b);
+    return order.map((k) => out[k]);
+  }
+
+  /** root → i path of node indices */
+  pathTo(i: number): number[] {
+    const p: number[] = [];
+    for (let k = i; k >= 0; k = this.parent[k]) p.push(k);
+    return p.reverse();
+  }
+
+  fullPath(i: number): string {
+    const parts = this.pathTo(i).slice(1).map((k) => this.names[k]);
+    const base = this.rootPath.replace(/[\\/]+$/, "");
+    const sep = this.rootPath.includes("\\") ? "\\" : "/";
+    return parts.length ? base + sep + parts.join(sep) : this.rootPath;
+  }
+
+  isAncestor(a: number, b: number): boolean {
+    for (let k = b; k >= 0; k = this.parent[k]) if (k === a) return true;
+    return false;
+  }
+
+  /** wire dir id for DIR_FILES requests */
+  wire(i: number): number {
+    return this.wireId[i];
+  }
+
+  // ---- storage --------------------------------------------------------------
+
+  private initNode(i: number, kind: number, parent: number, name: string, depth: number): void {
+    this.kind[i] = kind;
+    this.flags[i] = 0;
+    this.parent[i] = parent;
+    this.depth[i] = depth;
+    this.wireId[i] = -1;
+    this.ownAlloc[i] = this.ownApparent[i] = this.ownFiles[i] = 0;
+    this.totAlloc[i] = this.totApparent[i] = this.totFiles[i] = this.totDirs[i] = 0;
+    this.listedAlloc[i] = this.listedApparent[i] = this.listedCount[i] = 0;
+    this.unsettled[i] = 0;
+    this.dStart[i] = this.dCount[i] = this.fStart[i] = this.fCount[i] = 0;
+    this.bucket[i] = -1;
+    this.names[i] = name;
+  }
+
+  private mapWire(w: number, idx: number): void {
+    if (w >= this.wire2idx.length) {
+      let c = this.wire2idx.length || INITIAL;
+      while (c <= w) c *= 2;
+      const nw = new Int32Array(c).fill(-1);
+      nw.set(this.wire2idx);
+      this.wire2idx = nw;
+    }
+    this.wire2idx[w] = idx;
+    this.wireId[idx] = w;
+  }
+
+  private alloc(k: number): number {
+    const s = this.n;
+    if (s + k > this.cap) {
+      let c = this.cap;
+      while (c < s + k) c *= 2;
+      this.grow(c);
+    }
+    this.n += k;
+    return s;
+  }
+
+  private grow(c: number): void {
+    const g = <T extends Uint8Array | Uint16Array | Uint32Array | Int32Array | Float64Array>(a: T): T => {
+      const b = new (a.constructor as { new (n: number): T })(c);
+      b.set(a);
+      return b;
+    };
+    this.kind = g(this.kind);
+    this.flags = g(this.flags);
+    this.parent = g(this.parent);
+    this.depth = g(this.depth);
+    this.wireId = g(this.wireId);
+    this.ownAlloc = g(this.ownAlloc);
+    this.ownApparent = g(this.ownApparent);
+    this.ownFiles = g(this.ownFiles);
+    this.totAlloc = g(this.totAlloc);
+    this.totApparent = g(this.totApparent);
+    this.totFiles = g(this.totFiles);
+    this.totDirs = g(this.totDirs);
+    this.listedAlloc = g(this.listedAlloc);
+    this.listedApparent = g(this.listedApparent);
+    this.listedCount = g(this.listedCount);
+    this.unsettled = g(this.unsettled);
+    this.dStart = g(this.dStart);
+    this.dCount = g(this.dCount);
+    this.fStart = g(this.fStart);
+    this.fCount = g(this.fCount);
+    this.bucket = g(this.bucket);
+    this.cap = c;
+  }
+}
