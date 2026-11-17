@@ -36,18 +36,19 @@ func isGone(err error) bool {
 	return errors.Is(err, unix.ENOENT) || errors.Is(err, unix.ENOTDIR)
 }
 
-func rootID(path string) (dev, ino uint64, err error) {
+// rootID returns the identity of path, following symlinks.
+func rootID(path string) (Identity, error) {
 	var st unix.Stat_t
-	if err = unix.Stat(path, &st); err != nil {
-		return 0, 0, err
+	if err := unix.Stat(path, &st); err != nil {
+		return Identity{}, err
 	}
-	return devOf(&st), uint64(st.Ino), nil
+	return Identity{Dev: devOf(&st), Ino: uint64(st.Ino)}, nil
 }
 
 // readDirEntries opens path and calls fn for every entry (excluding . and
 // ..) after lstat-ing it relative to the directory fd. fn returns false to
 // stop early. A non-nil error with partial callbacks means a mid-read failure.
-func readDirEntries(path string, sc *readScratch, fn func(*rawEntry) bool) (selfInfo, error) {
+func readDirEntries(path string, want Identity, sc *readScratch, fn func(*rawEntry) bool) (selfInfo, error) {
 	fd, err := openDir(path)
 	if err != nil {
 		return selfInfo{}, err
@@ -56,8 +57,13 @@ func readDirEntries(path string, sc *readScratch, fn func(*rawEntry) bool) (self
 
 	var self selfInfo
 	var st unix.Stat_t
-	if unix.Fstat(fd, &st) == nil {
+	statOK := unix.Fstat(fd, &st) == nil
+	if statOK {
 		self = selfInfo{Dev: devOf(&st), Ino: uint64(st.Ino), Alloc: uint64(st.Blocks) * 512, Apparent: uint64(st.Size)}
+		self.ID = Identity{Dev: self.Dev, Ino: self.Ino}
+	}
+	if err := verifyOpened(want, self.ID, statOK); err != nil {
+		return selfInfo{}, err
 	}
 	if sc.buf == nil {
 		sc.buf = make([]byte, 64<<10)
@@ -102,6 +108,7 @@ func readDirEntries(path string, sc *readScratch, fn func(*rawEntry) bool) (self
 func fillEntry(e *rawEntry, st *unix.Stat_t) {
 	e.Dev = devOf(st)
 	e.Ino = uint64(st.Ino)
+	e.ID = Identity{Dev: e.Dev, Ino: e.Ino}
 	switch uint32(st.Mode) & unix.S_IFMT {
 	case unix.S_IFDIR:
 		e.Kind = kindDir

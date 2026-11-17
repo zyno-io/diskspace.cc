@@ -29,8 +29,15 @@ const (
 	closeUnknownSID = 4404
 
 	handshakeTimeout = 10 * time.Second
-	maxV2A           = 64 << 10
-	cmdQueueLen      = 64
+	// m1Timeout bounds the wait for M1. It is short because an attacker who
+	// only knows the session id can park connections here; the real viewer
+	// sends M1 immediately after the socket opens.
+	m1Timeout = 2 * time.Second
+	// errCodeChanged is the ERROR code for a directory that no longer matches
+	// what was scanned.
+	errCodeChanged = "changed"
+	maxV2A         = 64 << 10
+	cmdQueueLen    = 64
 )
 
 type cmd struct {
@@ -102,25 +109,30 @@ func (a *Agent) serveViewer(ws *websocket.Conn, g *generation) {
 	defer ws.CloseNow()
 
 	ws.SetReadLimit(maxV2A + 64)
-	if !a.hsAllow() {
-		v.fail(closeRateLimit, "too many attempts")
-		return
-	}
 
-	// M1
-	rctx, rcancel := context.WithTimeout(ctx, handshakeTimeout)
+	// M1. Anyone who knows only the session id can open this socket, so the
+	// handshake limiter is charged only for failures (timeout, malformed, bad
+	// MAC); a hello whose MAC verifies proves knowledge of K and is never
+	// refused.
+	rctx, rcancel := context.WithTimeout(ctx, m1Timeout)
 	mt, m1, err := ws.Read(rctx)
 	rcancel()
 	if err != nil || mt != websocket.MessageBinary {
+		a.hsAllow() // charge the failure; the connection is dropped either way
 		return
 	}
 	m2, keys, err := crypto.AgentRespond(g.sec, m1, rand.Reader)
 	switch {
-	case errors.Is(err, crypto.ErrVersion):
-		v.fail(closeVersion, "unsupported version")
-		return
-	case errors.Is(err, crypto.ErrMalformed), errors.Is(err, crypto.ErrBadMAC):
-		v.fail(closeAuth, "authentication failed")
+	case errors.Is(err, crypto.ErrVersion), errors.Is(err, crypto.ErrMalformed), errors.Is(err, crypto.ErrBadMAC):
+		if !a.hsAllow() {
+			v.fail(closeRateLimit, "too many attempts")
+			return
+		}
+		if errors.Is(err, crypto.ErrVersion) {
+			v.fail(closeVersion, "unsupported version")
+		} else {
+			v.fail(closeAuth, "authentication failed")
+		}
 		return
 	case err != nil:
 		v.fail(int(websocket.StatusInternalError), "internal error")
@@ -157,6 +169,7 @@ func (a *Agent) serveViewer(ws *websocket.Conn, g *generation) {
 	comp := proto.NewStreamCompressor(hello.Caps.ZstdStream)
 	defer comp.Close()
 	snd := newSender(ws, ciph, comp)
+	snd.onOverflow = func() { v.fail(closeRateLimit, "control queue overflow") }
 	if !a.activate(v, snd) {
 		return
 	}
@@ -193,7 +206,7 @@ func (a *Agent) serveViewer(ws *websocket.Conn, g *generation) {
 		}
 		switch typ {
 		case proto.MsgPing:
-			snd.push([]byte{proto.MsgPong})
+			snd.pushPong()
 		case proto.MsgCredit:
 			var m proto.Credit
 			if json.Unmarshal(payload, &m) != nil {
@@ -225,8 +238,8 @@ func (a *Agent) activate(v *viewerConn, snd *sender) bool {
 	a.mu.Unlock()
 	if auto {
 		p := filepath.Clean(a.cfg.AutoScan)
-		if filepath.IsAbs(p) && a.guard.Within(p) {
-			if _, err := a.startScan(scan.Options{Root: p}); err != nil {
+		if _, id, ok := a.guard.WithinResolved(p); filepath.IsAbs(p) && ok {
+			if _, err := a.startScan(scan.Options{Root: p, ExpectRoot: id}); err != nil {
 				a.emit(Event{Kind: EvError, Err: err, Message: "auto-scan: " + err.Error()})
 			}
 		}
@@ -306,7 +319,7 @@ func (v *viewerConn) handle(c cmd) {
 	a, snd := v.a, v.snd
 	switch c.typ {
 	case proto.MsgGetRoots:
-		snd.pushJSON(proto.MsgRoots, struct {
+		snd.pushJSONWait(v.ctx, proto.MsgRoots, struct {
 			Volumes []proto.Volume `json:"volumes"`
 		}{append([]proto.Volume{}, a.volumes()...)})
 
@@ -316,7 +329,7 @@ func (v *viewerConn) handle(c cmd) {
 			v.fail(closeProtocol, "protocol error")
 			return
 		}
-		snd.pushJSON(proto.MsgBrowseResult, a.browse(m))
+		snd.pushJSONWait(v.ctx, proto.MsgBrowseResult, a.browse(m))
 
 	case proto.MsgScanStart:
 		var m proto.ScanStart
@@ -325,20 +338,21 @@ func (v *viewerConn) handle(c cmd) {
 			return
 		}
 		if !filepath.IsAbs(m.Path) {
-			snd.pushError("bad_path", "path must be absolute")
+			snd.pushErrorWait(v.ctx, "bad_path", "path must be absolute")
 			return
 		}
 		p := filepath.Clean(m.Path)
-		if !a.guard.Within(p) {
-			snd.pushError("denied", "path is outside the allowed root")
+		_, rootIdent, ok := a.guard.WithinResolved(p)
+		if !ok {
+			snd.pushErrorWait(v.ctx, "denied", "path is outside the allowed root")
 			return
 		}
-		opts := scan.Options{Root: p, CrossMounts: m.CrossMounts, TopFiles: m.TopFiles, MinFileBytes: m.MinFileBytes}
+		opts := scan.Options{Root: p, ExpectRoot: rootIdent, CrossMounts: m.CrossMounts, TopFiles: m.TopFiles, MinFileBytes: m.MinFileBytes}
 		if opts.TopFiles > 64 {
 			opts.TopFiles = 64
 		}
 		if _, err := a.startScan(opts); err != nil {
-			snd.pushError("scan_failed", errMessage(err))
+			snd.pushErrorWait(v.ctx, "scan_failed", errMessage(err))
 		}
 
 	case proto.MsgScanCancel:
@@ -361,6 +375,8 @@ func (v *viewerConn) handle(c cmd) {
 
 func errMessage(err error) string {
 	switch {
+	case errors.Is(err, scan.ErrChanged):
+		return "changed"
 	case errors.Is(err, fs.ErrPermission):
 		return "permission denied"
 	case errors.Is(err, fs.ErrNotExist):
@@ -383,11 +399,14 @@ func (a *Agent) browse(m proto.Browse) proto.BrowseResult {
 	}
 	p := filepath.Clean(m.Path)
 	res.Path = p
-	if !a.guard.Within(p) {
+	resolved, ident, ok := a.guard.WithinResolved(p)
+	if !ok {
 		res.Error = "outside_root"
 		return res
 	}
-	dirs, err := scan.ListSubdirs(p)
+	// List the path the guard resolved, verifying it is still the directory
+	// the guard checked (closes the check/use window for swapped ancestors).
+	dirs, err := scan.ListSubdirsExpect(resolved, ident)
 	if err != nil {
 		res.Error = errMessage(err)
 		return res
@@ -403,12 +422,17 @@ func (v *viewerConn) dirFiles(m proto.DirFilesReq) {
 	snd := v.snd
 	run := v.a.currentRun()
 	if run == nil || run.id != m.ScanID {
-		snd.pushError("unknown_scan", "no such scan")
+		snd.pushErrorWait(v.ctx, "unknown_scan", "no such scan")
 		return
 	}
 	path, ok := run.scanner.PathOf(m.DirID)
 	if !ok {
-		snd.pushError("unknown_dir", "unknown directory id")
+		snd.pushErrorWait(v.ctx, "unknown_dir", "unknown directory id")
+		return
+	}
+	want, ok := run.scanner.DirIdentity(m.DirID)
+	if !ok || want.IsZero() {
+		snd.pushErrorWait(v.ctx, "unknown_dir", "unknown directory id")
 		return
 	}
 	limit := m.Limit
@@ -416,14 +440,18 @@ func (v *viewerConn) dirFiles(m proto.DirFilesReq) {
 		limit = proto.MaxDirFilesLimit
 	}
 	for {
-		res, err := scan.ListDirFiles(path, limit)
+		res, err := scan.ListDirFilesExpect(path, want, limit)
+		if errors.Is(err, scan.ErrChanged) {
+			snd.pushErrorWait(v.ctx, errCodeChanged, "directory changed since it was scanned")
+			return
+		}
 		if err != nil {
-			snd.pushError("dir_failed", errMessage(err))
+			snd.pushErrorWait(v.ctx, "dir_failed", errMessage(err))
 			return
 		}
 		body := proto.EncodeDirFiles(m.ReqID, m.ScanID, m.DirID, res)
 		if len(body) <= proto.MaxBody-1024 || limit <= 1 {
-			snd.push(body)
+			snd.pushWait(v.ctx, body)
 			return
 		}
 		limit /= 2

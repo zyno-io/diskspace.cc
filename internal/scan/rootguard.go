@@ -45,25 +45,42 @@ func (g *RootGuard) Within(p string) bool {
 	if g == nil {
 		return true
 	}
+	_, _, ok := g.WithinResolved(p)
+	return ok
+}
+
+// WithinResolved is Within that also returns the symlink-resolved path and the
+// identity of the directory it named, so the caller can open resolved with
+// ListSubdirsExpect / Options.ExpectRoot and detect a swap between check and
+// use. A nil guard returns the absolute path and a zero (unchecked) identity.
+func (g *RootGuard) WithinResolved(p string) (resolved string, id Identity, ok bool) {
 	abs, err := filepath.Abs(p)
 	if err != nil {
-		return false
+		return "", Identity{}, false
+	}
+	if g == nil {
+		return abs, Identity{}, true
 	}
 	cur, err := filepath.EvalSymlinks(abs)
 	if err != nil {
-		return false
+		return "", Identity{}, false
 	}
+	resolved = cur
 	for {
 		fi, err := os.Stat(cur)
 		if err != nil {
-			return false
+			return "", Identity{}, false
 		}
 		if os.SameFile(g.fi, fi) {
-			return true
+			id, err = rootID(resolved)
+			if err != nil {
+				return "", Identity{}, false
+			}
+			return resolved, id, true
 		}
 		parent := filepath.Dir(cur)
 		if parent == cur {
-			return false
+			return "", Identity{}, false
 		}
 		cur = parent
 	}

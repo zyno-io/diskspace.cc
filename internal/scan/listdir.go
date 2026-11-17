@@ -3,6 +3,7 @@
 package scan
 
 import (
+	"errors"
 	"slices"
 	"strings"
 
@@ -14,11 +15,18 @@ import (
 // beyond the limit are summed into the Rest* bucket. Hardlinks are deduped
 // within the directory only.
 func ListDirFiles(path string, limit int) (*proto.DirFilesResult, error) {
+	return ListDirFilesExpect(path, Identity{}, limit)
+}
+
+// ListDirFilesExpect is ListDirFiles but fails with ErrChanged when the
+// directory opened at path is not the one with identity want (a zero want
+// disables the check).
+func ListDirFilesExpect(path string, want Identity, limit int) (*proto.DirFilesResult, error) {
 	var sc readScratch
 	var files []proto.FileEntry
 	var seen map[fkey]struct{}
 	res := &proto.DirFilesResult{}
-	_, err := readDirEntries(path, &sc, func(e *rawEntry) bool {
+	_, err := readDirEntries(path, want, &sc, func(e *rawEntry) bool {
 		if e.Err != nil || e.Kind == kindDir {
 			return true
 		}
@@ -39,6 +47,9 @@ func ListDirFiles(path string, limit int) (*proto.DirFilesResult, error) {
 		files = append(files, proto.FileEntry{Name: e.Name, Alloc: e.Alloc, Apparent: e.Apparent, Flags: fl})
 		return true
 	})
+	if errors.Is(err, ErrChanged) {
+		return nil, ErrChanged
+	}
 	if err != nil {
 		switch {
 		case isDenied(err):
@@ -76,9 +87,14 @@ func ListDirFiles(path string, limit int) (*proto.DirFilesResult, error) {
 // ListSubdirs returns the sorted names of real subdirectories of path
 // (symlinks are not included).
 func ListSubdirs(path string) ([]string, error) {
+	return ListSubdirsExpect(path, Identity{})
+}
+
+// ListSubdirsExpect is ListSubdirs with an identity check (see ListDirFilesExpect).
+func ListSubdirsExpect(path string, want Identity) ([]string, error) {
 	var sc readScratch
 	var names []string
-	_, err := readDirEntries(path, &sc, func(e *rawEntry) bool {
+	_, err := readDirEntries(path, want, &sc, func(e *rawEntry) bool {
 		if e.Err == nil && e.Kind == kindDir && e.ChildFlags&proto.ChildReparse == 0 {
 			names = append(names, e.Name)
 		}

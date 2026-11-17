@@ -72,7 +72,7 @@ func refWalk(t testing.TB, root string) refTotals {
 	walk = func(p string) {
 		var sc readScratch
 		var kids []string
-		self, err := readDirEntries(p, &sc, func(e *rawEntry) bool {
+		self, err := readDirEntries(p, Identity{}, &sc, func(e *rawEntry) bool {
 			if e.Err != nil {
 				t.Fatalf("ref stat %s: %v", e.Name, e.Err)
 			}

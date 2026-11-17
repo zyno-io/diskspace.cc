@@ -3,6 +3,7 @@
 package scan
 
 import (
+	"errors"
 	"slices"
 	"strings"
 
@@ -13,6 +14,7 @@ type kid struct {
 	name  string
 	path  string
 	flags uint64
+	ident Identity
 }
 
 type worker struct {
@@ -73,7 +75,7 @@ func (w *worker) process(j job) {
 	topK, minBytes := opts.TopFiles, opts.MinFileBytes
 	folded := j.grp != nil
 
-	self, err := readDirEntries(j.path, &w.sc, func(e *rawEntry) bool {
+	self, err := readDirEntries(j.path, j.want, &w.sc, func(e *rawEntry) bool {
 		ticks++
 		if ticks&4095 == 0 && s.cancelled.Load() {
 			return false
@@ -103,7 +105,7 @@ func (w *worker) process(j job) {
 			case !s.visited.add(fkey{e.Dev, e.Ino}):
 				cf = proto.ChildDupDir
 			}
-			w.kids = append(w.kids, kid{name: e.Name, path: cp, flags: cf})
+			w.kids = append(w.kids, kid{name: e.Name, path: cp, flags: cf, ident: e.ID})
 			return true
 		}
 		if e.Dedup && !s.links.add(fkey{e.Dev, e.Ino}) {
@@ -130,7 +132,9 @@ func (w *worker) process(j job) {
 		case isDenied(err):
 			dflags |= proto.DirReadDenied
 			st.denied.Add(1)
-		case isGone(err):
+		case isGone(err), errors.Is(err, ErrChanged):
+			// A directory that is no longer the one announced is treated
+			// as vanished and never read.
 			dflags |= proto.DirVanished
 			st.vanished.Add(1)
 		default:
@@ -213,7 +217,7 @@ func (w *worker) process(j job) {
 			for i := range w.kids {
 				k := &w.kids[i]
 				rec.Dirs[i] = proto.ChildDir{Name: k.name, Flags: k.flags}
-				s.arena.set(first+uint64(i), j.id, k.name)
+				s.arena.set(first+uint64(i), j.id, k.name, k.ident)
 			}
 		}
 	}
@@ -244,7 +248,7 @@ func (w *worker) spawn(j job, first uint64, grp *foldGroup) {
 		if k.flags != 0 {
 			continue
 		}
-		jb := job{path: k.path, depth: j.depth + 1, grp: grp}
+		jb := job{path: k.path, depth: j.depth + 1, grp: grp, want: k.ident}
 		if grp == nil {
 			jb.id = first + uint64(i)
 		}

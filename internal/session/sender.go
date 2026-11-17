@@ -19,6 +19,16 @@ const (
 	progressStarveMax = time.Second
 )
 
+// Control-queue limits. Producers that answer viewer requests (the command
+// loop) wait until the queue is below the soft limits; every other producer is
+// small and bounded, and exceeding the hard limits closes the connection.
+const (
+	ctrlSoftEntries = 32
+	ctrlSoftBytes   = 1 << 20
+	ctrlHardEntries = 64
+	ctrlHardBytes   = 4 << 20
+)
+
 // initialCredit is the credit window in NODES ciphertext bytes (var for tests).
 var initialCredit = int64(proto.InitialCredit)
 
@@ -38,9 +48,14 @@ type sender struct {
 	comp *proto.StreamCompressor
 
 	wake chan struct{}
+	room chan struct{} // poked when the control queue shrinks
 
 	mu            sync.Mutex
 	ctrl          [][]byte
+	ctrlBytes     int
+	pongPending   bool
+	overflowed    bool
+	onOverflow    func() // called once (in its own goroutine) when the hard limits are exceeded
 	closeAfter    bool
 	closeCode     websocket.StatusCode
 	closeReason   string
@@ -54,7 +69,7 @@ type sender struct {
 }
 
 func newSender(ws *websocket.Conn, c *crypto.Cipher, comp *proto.StreamCompressor) *sender {
-	return &sender{ws: ws, ciph: c, comp: comp, wake: make(chan struct{}, 1), credit: initialCredit}
+	return &sender{ws: ws, ciph: c, comp: comp, wake: make(chan struct{}, 1), room: make(chan struct{}, 1), credit: initialCredit}
 }
 
 func (s *sender) poke() {
@@ -64,12 +79,68 @@ func (s *sender) poke() {
 	}
 }
 
-// push queues a control message body.
+// appendCtrlLocked queues body unconditionally; s.mu must be held.
+func (s *sender) appendCtrlLocked(body []byte) {
+	s.ctrl = append(s.ctrl, body)
+	s.ctrlBytes += len(body)
+}
+
+// push queues a control message body. The queue is bounded: past the hard
+// limits the message is dropped and the connection is torn down via
+// onOverflow.
 func (s *sender) push(body []byte) {
 	s.mu.Lock()
-	s.ctrl = append(s.ctrl, body)
+	if len(s.ctrl) >= ctrlHardEntries || s.ctrlBytes+len(body) > ctrlHardBytes {
+		fire := !s.overflowed && s.onOverflow != nil
+		s.overflowed = true
+		s.mu.Unlock()
+		if fire {
+			go s.onOverflow()
+		}
+		return
+	}
+	s.appendCtrlLocked(body)
 	s.mu.Unlock()
 	s.poke()
+}
+
+// pushPong requests a PONG. Requests coalesce: at most one is outstanding.
+func (s *sender) pushPong() {
+	s.mu.Lock()
+	s.pongPending = true
+	s.mu.Unlock()
+	s.poke()
+}
+
+// pushWait queues body once the control queue is below its soft limits,
+// blocking the caller (never the sender) until then. It returns false if ctx
+// ended first.
+func (s *sender) pushWait(ctx context.Context, body []byte) bool {
+	for {
+		s.mu.Lock()
+		if len(s.ctrl) < ctrlSoftEntries && s.ctrlBytes < ctrlSoftBytes {
+			s.appendCtrlLocked(body)
+			s.mu.Unlock()
+			s.poke()
+			return true
+		}
+		s.mu.Unlock()
+		select {
+		case <-ctx.Done():
+			return false
+		case <-s.room:
+		}
+	}
+}
+
+func (s *sender) pushJSONWait(ctx context.Context, typ byte, v any) {
+	if b, err := proto.EncodeMsg(typ, v); err == nil {
+		s.pushWait(ctx, b)
+	}
+}
+
+func (s *sender) pushErrorWait(ctx context.Context, code, msg string) {
+	s.pushJSONWait(ctx, proto.MsgError, proto.Error{Code: code, Message: msg})
 }
 
 func (s *sender) pushJSON(typ byte, v any) {
@@ -86,7 +157,7 @@ func (s *sender) pushError(code, msg string) {
 func (s *sender) bye(reason string) {
 	b, _ := proto.EncodeMsg(proto.MsgBye, proto.Bye{Reason: reason})
 	s.mu.Lock()
-	s.ctrl = append(s.ctrl, b)
+	s.appendCtrlLocked(b)
 	s.closeAfter, s.closeCode, s.closeReason = true, websocket.StatusNormalClosure, reason
 	s.mu.Unlock()
 	s.poke()
@@ -126,12 +197,12 @@ func (s *sender) attach(run *scanRun, replay bool) {
 	s.rd, s.endSent, s.progress, s.replayPending = rd, false, nil, false
 	if err != nil {
 		b, _ := proto.EncodeMsg(proto.MsgError, proto.Error{Code: proto.ErrCodeReplayUnavailable, Message: "scan history is no longer available; start a new scan"})
-		s.ctrl = append(s.ctrl, b)
+		s.appendCtrlLocked(b)
 		if replay {
-			s.ctrl = append(s.ctrl, []byte{proto.MsgReplayDone})
+			s.appendCtrlLocked([]byte{proto.MsgReplayDone})
 		}
 	} else {
-		s.ctrl = append(s.ctrl, run.startedBody)
+		s.appendCtrlLocked(run.startedBody)
 		if replay {
 			s.replayPending, s.replayUntil = true, run.log.countNow()
 		}
@@ -167,8 +238,18 @@ func (s *sender) pick() pick {
 		b := s.ctrl[0]
 		s.ctrl[0] = nil
 		s.ctrl = s.ctrl[1:]
+		s.ctrlBytes -= len(b)
 		s.mu.Unlock()
+		select {
+		case s.room <- struct{}{}:
+		default:
+		}
 		return pick{body: b}
+	}
+	if s.pongPending {
+		s.pongPending = false
+		s.mu.Unlock()
+		return pick{body: []byte{proto.MsgPong}}
 	}
 	if s.closeAfter {
 		s.mu.Unlock()

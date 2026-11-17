@@ -5,6 +5,7 @@
 package scan
 
 import (
+	"encoding/binary"
 	"errors"
 	"strings"
 	"unicode/utf8"
@@ -18,6 +19,7 @@ import (
 // FILE_INFO_BY_HANDLE_CLASS values used here.
 const (
 	classStandardInfo         = 1
+	classIDInfo               = 18
 	classIDBothDirInfo        = 10
 	classIDBothDirRestartInfo = 11
 	classIDExtdDirInfo        = 19
@@ -111,17 +113,43 @@ func openDir(path string) (windows.Handle, error) {
 		windows.FILE_FLAG_BACKUP_SEMANTICS|windows.FILE_FLAG_OPEN_REPARSE_POINT, 0)
 }
 
-func rootID(path string) (dev, ino uint64, err error) {
+// fileIDInfo is FILE_ID_INFO.
+type fileIDInfo struct {
+	VolumeSerialNumber uint64
+	FileID             [16]byte
+}
+
+// handleIdentity returns the (volume serial, 128-bit file id) of an open
+// handle, falling back to the 64-bit index when FileIdInfo is unsupported.
+// Directory enumeration reports file ids in the same representation.
+func handleIdentity(h windows.Handle) (Identity, bool) {
+	var ii fileIDInfo
+	if windows.GetFileInformationByHandleEx(h, classIDInfo, (*byte)(unsafe.Pointer(&ii)), uint32(unsafe.Sizeof(ii))) == nil {
+		return Identity{
+			Dev:  ii.VolumeSerialNumber,
+			Ino:  binary.LittleEndian.Uint64(ii.FileID[:8]),
+			Ino2: binary.LittleEndian.Uint64(ii.FileID[8:]),
+		}, true
+	}
+	var fi windows.ByHandleFileInformation
+	if windows.GetFileInformationByHandle(h, &fi) != nil {
+		return Identity{}, false
+	}
+	return Identity{Dev: uint64(fi.VolumeSerialNumber), Ino: uint64(fi.FileIndexHigh)<<32 | uint64(fi.FileIndexLow)}, true
+}
+
+// rootID returns the identity of path (a reparse point is not followed).
+func rootID(path string) (Identity, error) {
 	h, err := openDir(path)
 	if err != nil {
-		return 0, 0, err
+		return Identity{}, err
 	}
 	defer windows.CloseHandle(h)
-	var fi windows.ByHandleFileInformation
-	if err := windows.GetFileInformationByHandle(h, &fi); err != nil {
-		return 0, 0, err
+	id, ok := handleIdentity(h)
+	if !ok {
+		return Identity{}, errors.New("scan: cannot identify directory")
 	}
-	return uint64(fi.VolumeSerialNumber), uint64(fi.FileIndexHigh)<<32 | uint64(fi.FileIndexLow), nil
+	return id, nil
 }
 
 type fileStandardInfo struct {
@@ -138,7 +166,7 @@ func mixID(lo, hi uint64) uint64 {
 	return x
 }
 
-func readDirEntries(path string, sc *readScratch, fn func(*rawEntry) bool) (selfInfo, error) {
+func readDirEntries(path string, want Identity, sc *readScratch, fn func(*rawEntry) bool) (selfInfo, error) {
 	h, err := openDir(path)
 	if err != nil {
 		return selfInfo{}, err
@@ -146,11 +174,12 @@ func readDirEntries(path string, sc *readScratch, fn func(*rawEntry) bool) (self
 	defer windows.CloseHandle(h)
 
 	var self selfInfo
-	var fi windows.ByHandleFileInformation
-	if windows.GetFileInformationByHandle(h, &fi) == nil {
-		self.Dev = uint64(fi.VolumeSerialNumber)
-		self.Ino = uint64(fi.FileIndexHigh)<<32 | uint64(fi.FileIndexLow)
+	id, idOK := handleIdentity(h)
+	if err := verifyOpened(want, id, idOK); err != nil {
+		return selfInfo{}, err
 	}
+	self.ID = id
+	self.Dev, self.Ino = id.Dev, id.Ino
 	var si fileStandardInfo
 	if windows.GetFileInformationByHandleEx(h, classStandardInfo, (*byte)(unsafe.Pointer(&si)), uint32(unsafe.Sizeof(si))) == nil {
 		self.Alloc, self.Apparent = uint64(si.AllocationSize), uint64(si.EndOfFile)
@@ -215,6 +244,7 @@ func readDirEntries(path string, sc *readScratch, fn func(*rawEntry) bool) (self
 				if attrs&attrDirectory != 0 {
 					e.Kind = kindDir
 					e.Ino = mixID(idLo, idHi)
+					e.ID = Identity{Dev: self.Dev, Ino: idLo, Ino2: idHi}
 					if reparse && tag&reparseNameSurrogate != 0 {
 						e.ChildFlags = proto.ChildReparse
 					}

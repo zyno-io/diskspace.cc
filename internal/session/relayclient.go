@@ -17,6 +17,10 @@ import (
 	"github.com/zyno-io/diskspace.cc/internal/relay"
 )
 
+// maxDataSockets caps concurrent pending and active relay data sockets per
+// control session, so a hostile relay cannot exhaust file descriptors.
+const maxDataSockets = 4
+
 func (a *Agent) relayWS(path string, q url.Values) string {
 	u, err := url.Parse(a.relayBase())
 	if err != nil {
@@ -107,8 +111,9 @@ func (a *Agent) relaySession(g *generation) (registered bool, err error) {
 	defer c.CloseNow()
 
 	var (
-		mu    sync.Mutex
-		pairs = map[string]context.CancelFunc{}
+		mu         sync.Mutex
+		pairs      = map[string]context.CancelFunc{}
+		warnedFull bool
 	)
 	defer func() {
 		mu.Lock()
@@ -148,9 +153,22 @@ func (a *Agent) relaySession(g *generation) (registered bool, err error) {
 				a.emit(Event{Kind: EvLinkReady, URL: linkFor(a.relayBase(), g), LocalURL: a.LocalURL()})
 			}
 		case relay.MsgViewer:
-			vctx, vcancel := context.WithCancel(g.ctx)
 			cid := m.CID
 			mu.Lock()
+			if _, dup := pairs[cid]; dup {
+				mu.Unlock() // already pending/active: never overwrite its cancel func
+				continue
+			}
+			if len(pairs) >= maxDataSockets {
+				warn := !warnedFull
+				warnedFull = true
+				mu.Unlock()
+				if warn {
+					a.emit(Event{Kind: EvError, Message: "relay requested more concurrent viewer sockets than allowed; ignoring extras"})
+				}
+				continue
+			}
+			vctx, vcancel := context.WithCancel(g.ctx)
 			pairs[cid] = vcancel
 			mu.Unlock()
 			go func() {

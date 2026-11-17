@@ -18,6 +18,7 @@ type job struct {
 	id    uint64 // announced id (unused for folded jobs)
 	depth int32
 	grp   *foldGroup // non-nil: folded job
+	want  Identity   // expected identity of the directory at path
 }
 
 // deque: owner pushes/pops at the tail (LIFO), thieves steal from the head.

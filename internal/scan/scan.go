@@ -20,11 +20,12 @@ import (
 type Options struct {
 	Root         string // absolute, cleaned
 	CrossMounts  bool
-	TopFiles     int    // default 8 (negative disables)
-	MinFileBytes uint64 // default 1<<20
-	Threads      int    // default clamp(2*NumCPU, 8, 32)
-	MaxDirs      uint64 // default 2_000_000 (announced dirs)
-	MaxDepth     int    // default 512
+	TopFiles     int      // default 8 (negative disables)
+	MinFileBytes uint64   // default 1<<20
+	Threads      int      // default clamp(2*NumCPU, 8, 32)
+	MaxDirs      uint64   // default 2_000_000 (announced dirs)
+	MaxDepth     int      // default 512
+	ExpectRoot   Identity // if set, Root must have this identity (see RootGuard.WithinResolved)
 }
 
 // Stats is a snapshot of scan counters.
@@ -46,6 +47,7 @@ type Scanner struct {
 	opts             Options
 	plat             platState
 	rootDev, rootIno uint64
+	rootIdent        Identity
 
 	nextID  atomic.Uint64
 	arena   *arena
@@ -111,10 +113,15 @@ func New(opts Options) (*Scanner, error) {
 	}
 	s := &Scanner{opts: opts}
 	s.cond = sync.NewCond(&s.mu)
-	dev, ino, err := rootID(root)
+	rid, err := rootID(root)
 	if err != nil {
 		return nil, err
 	}
+	if err := verifyOpened(opts.ExpectRoot, rid, true); err != nil {
+		return nil, err
+	}
+	dev, ino := rid.Dev, rid.Ino
+	s.rootIdent = rid
 	s.rootDev, s.rootIno = dev, ino
 	s.plat.init(root, dev, opts.CrossMounts)
 	s.visited.add(fkey{dev, ino})
@@ -153,6 +160,18 @@ func (s *Scanner) PathOf(id uint64) (string, bool) {
 	return s.arena.path(s.opts.Root, id, s.opts.MaxDepth)
 }
 
+// DirIdentity returns the identity recorded for an announced directory id.
+func (s *Scanner) DirIdentity(id uint64) (Identity, bool) {
+	if id == 0 {
+		return s.rootIdent, true
+	}
+	e, ok := s.arena.get(id)
+	if !ok {
+		return Identity{}, false
+	}
+	return e.ident, true
+}
+
 // Run scans the tree. emit is called from the calling goroutine only, in
 // parent-before-child order. Run returns after all workers have drained.
 func (s *Scanner) Run(ctx context.Context, emit func(proto.Record)) (Stats, error) {
@@ -164,7 +183,7 @@ func (s *Scanner) Run(ctx context.Context, emit func(proto.Record)) (Stats, erro
 	}
 	s.out = make(chan proto.Record, 8192)
 	s.pending.Store(1)
-	s.workers[0].dq.push(job{path: s.opts.Root, id: 0, depth: 0})
+	s.workers[0].dq.push(job{path: s.opts.Root, id: 0, depth: 0, want: s.rootIdent})
 
 	stop := context.AfterFunc(ctx, s.cancel)
 	defer stop()
