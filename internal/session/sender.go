@@ -325,6 +325,10 @@ func (s *sender) pick() pick {
 		return pick{closing: true}
 	}
 	rd, credit, replayPending, replayUntil, wantEnd, endSent := s.rd, s.credit, s.replayPending, s.replayUntil, s.replayWantEnd, s.endSent
+	// A reader is live once any replay of the log is behind it: it attached
+	// before the scan started, or it has caught up with a scan that was still
+	// running when it attached (auto-scan viewers and reconnects).
+	live := s.liveAttach || (!replayPending && !wantEnd)
 	prog := s.progress
 	if credit <= 0 || endSent {
 		s.progress, prog = nil, nil // out of credit (droppable) or scan over
@@ -334,14 +338,14 @@ func (s *sender) pick() pick {
 
 	var p pick
 	if rd != nil {
-		if e := rd.l.endNow(); e != nil && !e.Done && !endSent && s.liveAttach {
+		if e := rd.l.endNow(); e != nil && !e.Done && !endSent && live {
 			// A live viewer stopped (or failed) this scan: end it promptly instead of
 			// queueing SCAN_ENDED behind unsent NODES. A replay delivers every logged
 			// NODES first so a reconnect after Stop still shows the partial tree.
+			if !s.markEndSent(rd) {
+				return s.pick() // a new scan attached meanwhile
+			}
 			rd.skipToEnd()
-			s.mu.Lock()
-			s.endSent = true
-			s.mu.Unlock()
 			return pick{body: e.Body}
 		}
 		// REPLAY_DONE follows the replayed NODES and, if the scan had already
@@ -366,9 +370,9 @@ func (s *sender) pick() pick {
 			}
 			// out of credit: wait for CREDIT (wake)
 		case end != nil && !endSent:
-			s.mu.Lock()
-			s.endSent = true
-			s.mu.Unlock()
+			if !s.markEndSent(rd) {
+				return s.pick() // a new scan attached meanwhile
+			}
 			if len(end.Body) > 0 {
 				return pick{body: end.Body}
 			}
@@ -380,6 +384,19 @@ func (s *sender) pick() pick {
 		return s.takeProgress()
 	}
 	return p
+}
+
+// markEndSent records that rd's end message is going out, unless attach has
+// replaced the reader since pick took its snapshot (the new scan's state must
+// not be overwritten).
+func (s *sender) markEndSent(rd *logReader) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.rd != rd {
+		return false
+	}
+	s.endSent = true
+	return true
 }
 
 func (s *sender) takeProgress() pick {

@@ -690,9 +690,19 @@ func (a *Agent) cancelScan(id uint64) {
 // setPaused pauses or resumes the scan with the given id (idempotent). A
 // request for a scan that is not the current running one changes nothing. The
 // active viewer is always told the resulting state.
-func (a *Agent) setPaused(id uint64, paused bool) {
+// setPaused applies a viewer's SCAN_PAUSE. Only the active viewer may steer
+// the scan: a superseded connection (BYE queued, still draining) is ignored.
+// The check runs under scanMu so it can't interleave with the new viewer's
+// activate → resumeIfPaused.
+func (a *Agent) setPaused(from *viewerConn, id uint64, paused bool) {
 	a.scanMu.Lock()
 	defer a.scanMu.Unlock()
+	a.mu.Lock()
+	active := a.active == from
+	a.mu.Unlock()
+	if !active {
+		return
+	}
 	r := a.currentRun()
 	if r == nil {
 		return

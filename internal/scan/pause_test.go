@@ -23,23 +23,27 @@ func TestPauseResume(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Pause from inside the scanner (on the 20th directory open), not from the
+	// record consumer: records lag behind the workers, so on a fast machine
+	// the whole tree could already be scanned by the time the consumer saw
+	// record 50.
 	var opens atomic.Int64
-	hookBeforeOpen = func(string) { opens.Add(1) }
+	paused := make(chan struct{})
+	var once atomic.Bool
+	hookBeforeOpen = func(string) {
+		if opens.Add(1) == 20 && once.CompareAndSwap(false, true) {
+			s.Pause()
+			close(paused)
+		}
+	}
 	defer func() { hookBeforeOpen = nil }()
 
 	r := &result{s: s}
-	var n atomic.Int64
-	paused := make(chan struct{})
-	var once atomic.Bool
 	done := make(chan error, 1)
 	go func() {
 		var err error
 		r.stats, err = s.Run(context.Background(), func(rec proto.Record) {
 			r.recs = append(r.recs, rec)
-			if n.Add(1) == 50 && once.CompareAndSwap(false, true) {
-				s.Pause()
-				close(paused)
-			}
 		})
 		done <- err
 	}()

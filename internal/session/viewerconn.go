@@ -386,13 +386,7 @@ func (v *viewerConn) handle(c cmd) {
 			v.fail(closeProtocol, "protocol error")
 			return
 		}
-		// A superseded connection (BYE queued, still draining) must not steer the scan.
-		a.mu.Lock()
-		active := a.active == v
-		a.mu.Unlock()
-		if active {
-			a.setPaused(m.ScanID, m.Paused)
-		}
+		a.setPaused(v, m.ScanID, m.Paused)
 
 	case proto.MsgDirFilesReq:
 		var m proto.DirFilesReq
