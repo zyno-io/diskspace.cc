@@ -8,6 +8,7 @@ import { batch, computed, signal } from "@preact/signals";
 import type { AgentInfo, ByeMsg, ConnState, NodeBatch, Progress, ScanDone, ScanEnded, ScanStarted, Session } from "../protocol/types";
 import { defaultUnits, type Units } from "../store/format";
 import { TreeStore } from "../store/tree";
+import { IngestScheduler, trackInput, type IngestEnv } from "./ingest";
 
 export type Phase = "connecting" | "picker" | "scanning" | "done" | "stopped" | "superseded" | "closed" | "error";
 
@@ -49,7 +50,33 @@ export class Controller {
   private vLast = 0;
   private unitsTouched = false;
 
-  constructor(readonly session: Session) {}
+  /** paced main-thread ingest; `backlog` > 0 tells renderers to back off */
+  readonly ingest: IngestScheduler;
+  private untrack: (() => void) | null = null;
+
+  constructor(
+    readonly session: Session,
+    env?: IngestEnv,
+  ) {
+    this.ingest = new IngestScheduler(
+      {
+        applySlice: (b, from, deadline) => this.store.applySlice(b, from, deadline),
+        batchDone: (b) => this.session.applied(b.wireBytes, b.gen),
+        done: (m) => this.onDone(m),
+        ended: (m) => this.onEnded(m),
+        replayDone: () => this.flush(),
+        tick: () => this.changed(false),
+      },
+      env,
+    );
+    if (!env && typeof window !== "undefined") this.untrack = trackInput(this.ingest);
+  }
+
+  /** stop listening for input (view teardown) */
+  dispose(): void {
+    this.untrack?.();
+    this.untrack = null;
+  }
 
   start(): void {
     this.session.start({
@@ -67,13 +94,9 @@ export class Controller {
       progress: (p) => {
         if (p.scanId === this.store.scanId) this.progress.value = p;
       },
-      scanDone: (m) => this.onDone(m),
-      scanEnded: (m) => {
-        if (m.scanId !== this.store.scanId) return;
-        this.flush();
-        this.ended.value = m;
-      },
-      replayDone: () => this.flush(),
+      scanDone: (m) => this.ingest.pushDone(m),
+      scanEnded: (m) => this.ingest.pushEnded(m),
+      replayDone: () => this.ingest.pushReplayDone(),
       bye: (m) => {
         this.bye.value = m;
         if (m.reason === "superseded") this.conn.value = { s: "superseded" };
@@ -126,6 +149,9 @@ export class Controller {
   // ---- internals --------------------------------------------------------------
 
   private onScanStarted(m: ScanStarted): void {
+    // Anything still queued is obsolete: a new scan, or a reconnect replaying this
+    // scan from the start (same scanId) into the reset store.
+    this.ingest.discardAll();
     this.store.reset(m);
     batch(() => {
       this.scan.value = m;
@@ -143,13 +169,14 @@ export class Controller {
   }
 
   private onNodes(b: NodeBatch): void {
-    if (b.scanId !== this.store.scanId) {
-      this.session.applied(b.wireBytes);
-      return;
-    }
-    this.store.ingest(b);
-    this.session.applied(b.wireBytes);
-    this.changed(false);
+    // stale batches are queued too: they are acknowledged in order, cheaply
+    this.ingest.pushBatch(b);
+  }
+
+  private onEnded(m: ScanEnded): void {
+    if (m.scanId !== this.store.scanId) return;
+    this.flush();
+    this.ended.value = m;
   }
 
   private onDone(m: ScanDone): void {

@@ -12,7 +12,10 @@ import { computeLayout, DEFAULT_LAYOUT, IT_DIR, IT_LEAF, IT_REST, Layout, type L
 
 const TWEEN_MS = 220;
 const ZOOM_MS = 250;
-const RELAYOUT_MS = 250; // ≤ 4 relayouts/s while streaming
+/** relayout interval while streaming: ≥ 250 ms, ≈ 8× the measured layout cost, ≤ 2 s */
+export const relayoutInterval = (layoutMs: number): number => Math.min(2000, Math.max(250, 8 * layoutMs));
+/** skip the tween when a layout+draw cycle is this slow (it would only add frames to a struggling main thread) */
+const TWEEN_COST_MS = 8;
 
 const STRETCH = ["ultra-condensed", "extra-condensed", "condensed", "semi-condensed", "normal"] as const;
 const WEIGHT = [620, 450] as const;
@@ -39,6 +42,8 @@ export interface TreemapOptions {
   onHover?(node: number): void;
   onSelect?(node: number): void;
   onZoom?(node: number): void;
+  /** queued, not yet applied ingest items; > 0 means the main thread is busy */
+  backlog?(): number;
   layout?: Partial<LayoutOptions>;
 }
 
@@ -103,6 +108,8 @@ export class TreemapView {
   private raf = 0;
   private layoutTimer = 0;
   private lastLayout = 0;
+  private lastLayoutMs = 0;
+  private lastDrawMs = 0;
   private patterns: CanvasPattern[] = [];
   private measureCache = new Map<string, number>();
   private slot = new Int32Array(0);
@@ -175,7 +182,7 @@ export class TreemapView {
   /** store contents changed (throttled relayout with tween) */
   invalidate(): void {
     if (this.layoutTimer || this.disposed) return;
-    const due = Math.max(0, this.lastLayout + RELAYOUT_MS - performance.now());
+    const due = Math.max(0, this.lastLayout + relayoutInterval(this.lastLayoutMs) - performance.now());
     this.layoutTimer = window.setTimeout(() => {
       this.layoutTimer = 0;
       this.relayout(true);
@@ -271,13 +278,16 @@ export class TreemapView {
       this.invalidate();
       return;
     }
-    this.lastLayout = performance.now();
-    const animate = tween && !this.o.reducedMotion && this.cur.L.count > 0;
+    const t0 = performance.now();
+    this.lastLayout = t0;
+    const busy = (this.o.backlog?.() ?? 0) > 0 || this.lastLayoutMs + this.lastDrawMs > TWEEN_COST_MS;
+    const animate = tween && !busy && !this.o.reducedMotion && this.cur.L.count > 0;
     const prev = this.cur;
     this.cur = this.old;
     this.old = prev;
     if (animate) this.captureDisplayed(prev);
     this.layoutInto(this.cur, animate);
+    this.lastLayoutMs = performance.now() - t0;
     this.requestDraw();
   }
 
@@ -479,6 +489,16 @@ export class TreemapView {
 
   private frame = (now: number): void => {
     this.raf = 0;
+    const d0 = performance.now();
+    try {
+      this.frameBody(now);
+    } finally {
+      this.lastDrawMs = performance.now() - d0;
+    }
+  };
+
+  private frameBody(now: number): void {
+    
     const ctx = this.ctx;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
@@ -520,7 +540,7 @@ export class TreemapView {
       else this.cur.t0 = 0;
     }
     if (again) this.raf = requestAnimationFrame(this.frame);
-  };
+  }
 
   private drawScene(s: Scene, t: number, sx: number, sy: number, tx: number, ty: number, alpha: number): void {
     if (alpha <= 0.001) return;

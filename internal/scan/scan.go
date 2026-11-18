@@ -13,6 +13,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/zyno-io/diskspace.cc/internal/prio"
 	"github.com/zyno-io/diskspace.cc/internal/proto"
 )
 
@@ -20,12 +21,13 @@ import (
 type Options struct {
 	Root         string // absolute, cleaned
 	CrossMounts  bool
-	TopFiles     int      // default 8 (negative disables)
-	MinFileBytes uint64   // default 1<<20
-	Threads      int      // default clamp(2*NumCPU, 8, 32)
-	MaxDirs      uint64   // default 2_000_000 (announced dirs)
-	MaxDepth     int      // default 512
-	ExpectRoot   Identity // if set, Root must have this identity (see RootGuard.WithinResolved)
+	TopFiles     int        // default 8 (negative disables)
+	MinFileBytes uint64     // default 1<<20
+	Threads      int        // default clamp(2*NumCPU, 8, 32)
+	MaxDirs      uint64     // default 2_000_000 (announced dirs)
+	MaxDepth     int        // default 512
+	Priority     prio.Level // Low: worker threads lower their priority (Linux; other OSes are process-wide)
+	ExpectRoot   Identity   // if set, Root must have this identity (see RootGuard.WithinResolved)
 }
 
 // Stats is a snapshot of scan counters.

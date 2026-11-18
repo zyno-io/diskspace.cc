@@ -8,7 +8,7 @@ export type WorkerCommand =
   | { t: "scanCancel"; scanId: number }
   | { t: "browse"; reqId: number; path: string }
   | { t: "dirFiles"; reqId: number; scanId: number; dirId: number; limit: number }
-  | { t: "applied"; n: number }
+  | { t: "applied"; n: number; gen?: number }
   | { t: "takeOver" }
   | { t: "close" };
 

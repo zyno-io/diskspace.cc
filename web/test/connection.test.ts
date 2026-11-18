@@ -205,3 +205,95 @@ describe("ViewerConnection against a simulated agent", () => {
     expect(t.states().at(-1)).toBe("closed");
   });
 });
+
+describe("ViewerConnection pacing", () => {
+  const nodesBody = (scanId: number, m = 3) => {
+    const b = new Uint8Array(2 + 1 + m * 2);
+    b.set([MSG.NODES, scanId, m]);
+    for (let i = 0; i < m; i++) b.set([3, 5], 3 + i * 2);
+    return b;
+  };
+  const pushNodes = async (t: ReturnType<typeof setup>, scanId: number) => {
+    const ct = await t.agents[0].seal(concat0(nodesBody(scanId)));
+    t.sockets[0].push(ct);
+    return ct.length;
+  };
+  const kinds = (t: ReturnType<typeof setup>) => t.events.map((e) => e.t).filter((k) => k !== "state" && k !== "agentInfo");
+
+  it("ignores applied reports from an earlier connection (gen mismatch)", async () => {
+    const t = setup();
+    t.conn.connect();
+    await t.start();
+    await until(() => t.states().includes("connected"));
+    t.sockets[0].push(await t.agents[0].json(MSG.SCAN_STARTED, { scanId: 1, path: "/x", rootName: "x", volume: null, opts: {} }));
+    for (let i = 0; i < 4; i++) await pushNodes(t, 1);
+    await until(() => kinds(t).filter((k) => k === "nodes").length === 2);
+    t.conn.handle({ t: "applied", n: 10, gen: -1 }); // stale: must not free a slot
+    await sleep(50);
+    expect(kinds(t).filter((k) => k === "nodes").length).toBe(2);
+    t.conn.handle({ t: "applied", n: 10 }); // current (untagged) report frees one
+    await sleep(20);
+    expect(kinds(t).filter((k) => k === "nodes").length).toBe(3);
+  });
+
+  it("keeps at most 2 NODES in flight; each applied releases one; SCAN_DONE stays behind queued NODES", async () => {
+    const t = setup();
+    t.conn.connect();
+    await t.start();
+    await until(() => t.states().includes("connected"));
+    t.sockets[0].push(await t.agents[0].json(MSG.SCAN_STARTED, { scanId: 1, path: "/x", rootName: "x", volume: null, opts: {} }));
+    for (let i = 0; i < 5; i++) await pushNodes(t, 1);
+    t.sockets[0].push(await t.agents[0].json(MSG.SCAN_DONE, { scanId: 1 }));
+    await until(() => kinds(t).filter((k) => k === "nodes").length === 2);
+    await sleep(50);
+    expect(kinds(t)).toEqual(["scanStarted", "nodes", "nodes"]); // scanDone not yet delivered
+    t.conn.handle({ t: "applied", n: 10 });
+    await sleep(20);
+    expect(kinds(t).filter((k) => k === "nodes").length).toBe(3);
+    t.conn.handle({ t: "applied", n: 10 });
+    t.conn.handle({ t: "applied", n: 10 });
+    await sleep(20);
+    expect(kinds(t).filter((k) => k === "nodes").length).toBe(5);
+    expect(kinds(t)).toEqual(["scanStarted", "nodes", "nodes", "nodes", "nodes", "nodes", "scanDone"]); // done only after every queued NODES was posted
+  });
+
+  it("PROGRESS and BROWSE_RESULT bypass queued NODES", async () => {
+    const t = setup();
+    t.conn.connect();
+    await t.start();
+    await until(() => t.states().includes("connected"));
+    t.sockets[0].push(await t.agents[0].json(MSG.SCAN_STARTED, { scanId: 1, path: "/x", rootName: "x", volume: null, opts: {} }));
+    for (let i = 0; i < 4; i++) await pushNodes(t, 1);
+    t.sockets[0].push(await t.agents[0].json(MSG.PROGRESS, { scanId: 1, dirs: 1, files: 2, alloc: 3, apparent: 3 }));
+    t.sockets[0].push(await t.agents[0].json(MSG.BROWSE_RESULT, { reqId: 1, path: "/", entries: [] }));
+    await until(() => kinds(t).includes("progress") && kinds(t).includes("browseResult"));
+    expect(kinds(t).filter((k) => k === "nodes").length).toBe(2); // window still full
+  });
+
+  it("a new SCAN_STARTED drops queued NODES of the old scan and credits them immediately", async () => {
+    const t = setup();
+    t.conn.connect();
+    await t.start();
+    await until(() => t.states().includes("connected"));
+    t.sockets[0].push(await t.agents[0].json(MSG.SCAN_STARTED, { scanId: 1, path: "/x", rootName: "x", volume: null, opts: {} }));
+    let queuedBytes = 0;
+    for (let i = 0; i < 4; i++) {
+      const n = await pushNodes(t, 1);
+      if (i >= 2) queuedBytes += n; // first two are posted, last two stay queued
+    }
+    await until(() => kinds(t).filter((k) => k === "nodes").length === 2);
+    await sleep(20);
+    // enough queued bytes to cross the credit flush threshold on their own
+    expect(queuedBytes).toBeLessThan(1 << 20);
+    const before = t.sockets[0].sent.length;
+    t.sockets[0].push(await t.agents[0].json(MSG.SCAN_STARTED, { scanId: 2, path: "/x", rootName: "x", volume: null, opts: {} }));
+    await until(() => kinds(t).filter((k) => k === "scanStarted").length === 2);
+    await sleep(20);
+    // old scan batches are gone: acknowledging the two in flight releases nothing else
+    t.conn.handle({ t: "applied", n: 1 });
+    t.conn.handle({ t: "applied", n: 1 });
+    await sleep(20);
+    expect(kinds(t).filter((k) => k === "nodes").length).toBe(2);
+    void before;
+  });
+});

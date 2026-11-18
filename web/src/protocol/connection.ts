@@ -10,7 +10,7 @@ import { MSG, PROTO_VERSION } from "./types";
 import type { ConnState } from "./types";
 import type { WorkerCommand, WorkerEvent } from "./worker-protocol";
 import { StreamDecoder } from "./zstream";
-import { ProtocolError } from "./varint";
+import { ProtocolError, Reader } from "./varint";
 
 export interface SocketLike {
   binaryType: string;
@@ -35,6 +35,11 @@ export interface ConnectionOptions {
 
 const DEFAULT_TIMING = { handshakeMs: 10_000, pingMs: 20_000, idleMs: 60_000, backoffBaseMs: 500, backoffMaxMs: 8_000 };
 const CREDIT_FLUSH = 1 << 20;
+/** NODES batches posted to the main thread and not yet reported applied */
+export const MAX_NODES_IN_FLIGHT = 2;
+
+/** ordered backlog entry: a raw NODES body (decoded only when posted) or a control event */
+type Queued = { k: "nodes"; body: Uint8Array; wire: number; scanId: number } | { k: "ev"; e: WorkerEvent };
 
 type Phase = "idle" | "await-m2" | "active";
 
@@ -57,6 +62,11 @@ export class ViewerConnection {
   private superseded = false;
   private inflight = 0;
   private pendingCredit = 0;
+  private queue: Queued[] = [];
+  private qHead = 0;
+  private outstanding = 0; // NODES posted, not yet acknowledged by "applied"
+  private progress: WorkerEvent | null = null;
+  private progressTimer: ReturnType<typeof setTimeout> | undefined;
   private timers: { hs?: ReturnType<typeof setTimeout>; ping?: ReturnType<typeof setInterval>; retry?: ReturnType<typeof setTimeout>; lastRx: number } = { lastRx: 0 };
 
   constructor(o: ConnectionOptions) {
@@ -79,6 +89,7 @@ export class ViewerConnection {
     this.confirmed = false;
     this.inflight = 0;
     this.pendingCredit = 0;
+    this.resetQueue();
     this.recvChain = Promise.resolve();
     this.sendChain = Promise.resolve();
     this.state(this.attempt === 0 ? { s: "connecting" } : { s: "reconnecting", attempt: this.attempt });
@@ -197,9 +208,13 @@ export class ViewerConnection {
     if (!this.confirmed && type !== MSG.AGENT_INFO) throw new ProtocolError("expected AGENT_INFO");
     switch (type) {
       case MSG.NODES: {
-        const b = decodeNodes(body, wire);
+        // Pace delivery: keep the raw body, decode when it is posted. A fresh
+        // body (decrypt/zstream output) is never reused by later frames.
+        const r = new Reader(body, 1);
+        const scanId = r.uv();
         this.inflight += wire;
-        this.o.post({ t: "nodes", v: b });
+        this.queue.push({ k: "nodes", body, wire, scanId });
+        this.pump();
         return;
       }
       case MSG.DIR_FILES:
@@ -225,19 +240,19 @@ export class ViewerConnection {
         this.o.post({ t: "browseResult", v: m.v });
         break;
       case MSG.SCAN_STARTED:
-        this.o.post({ t: "scanStarted", v: m.v });
+        this.enqueue({ t: "scanStarted", v: m.v });
         break;
       case MSG.PROGRESS:
-        this.o.post({ t: "progress", v: m.v });
+        this.postProgress({ t: "progress", v: m.v });
         break;
       case MSG.SCAN_DONE:
-        this.o.post({ t: "scanDone", v: m.v });
+        this.enqueue({ t: "scanDone", v: m.v });
         break;
       case MSG.SCAN_ENDED:
-        this.o.post({ t: "scanEnded", v: m.v });
+        this.enqueue({ t: "scanEnded", v: m.v });
         break;
       case MSG.REPLAY_DONE:
-        this.o.post({ t: "replayDone" });
+        this.enqueue({ t: "replayDone" });
         break;
       case MSG.ERROR:
         this.o.post({ t: "error", v: m.v });
@@ -255,6 +270,88 @@ export class ViewerConnection {
         this.killSocket(1000);
         break;
       default: // ROOTS, PONG: ignored
+    }
+  }
+
+  // ---- paced delivery -------------------------------------------------------
+
+  private resetQueue(): void {
+    this.queue = [];
+    this.qHead = 0;
+    this.outstanding = 0;
+    this.progress = null;
+    clearTimeout(this.progressTimer);
+    this.progressTimer = undefined;
+  }
+
+  /** ordered control event: delivered after every NODES queued before it */
+  private enqueue(e: WorkerEvent): void {
+    if (e.t === "scanStarted") this.dropStale(e.v.scanId);
+    this.queue.push({ k: "ev", e });
+    this.pump();
+  }
+
+  /** a new scan began: queued NODES of any other scan are useless; credit them now */
+  private dropStale(scanId: number): void {
+    let dropped = 0;
+    const keep: Queued[] = [];
+    for (let i = this.qHead; i < this.queue.length; i++) {
+      const q = this.queue[i];
+      if (q.k === "nodes" && q.scanId !== scanId) dropped += q.wire;
+      else keep.push(q);
+    }
+    this.queue = keep;
+    this.qHead = 0;
+    if (dropped > 0) this.credit(dropped);
+  }
+
+  private credit(n: number): void {
+    const c = Math.min(n, this.inflight);
+    this.inflight -= c;
+    this.pendingCredit += c;
+    if (this.pendingCredit >= CREDIT_FLUSH) {
+      this.sendBody(msg.credit(this.pendingCredit));
+      this.pendingCredit = 0;
+    }
+  }
+
+  /** PROGRESS is latest-wins and never waits behind NODES */
+  private postProgress(e: WorkerEvent): void {
+    this.progress = e;
+    if (this.progressTimer !== undefined) return;
+    this.progressTimer = setTimeout(() => {
+      this.progressTimer = undefined;
+      const p = this.progress;
+      this.progress = null;
+      if (p) this.o.post(p);
+    }, 0);
+  }
+
+  private pump(): void {
+    const gen = this.gen;
+    try {
+      while (this.qHead < this.queue.length) {
+        const q = this.queue[this.qHead];
+        if (q.k === "nodes") {
+          if (this.outstanding >= MAX_NODES_IN_FLIGHT) break;
+          this.qHead++;
+          this.outstanding++;
+          this.o.post({ t: "nodes", v: { ...decodeNodes(q.body, q.wire), gen: this.gen } });
+        } else {
+          this.qHead++;
+          this.o.post(q.e);
+        }
+        if (gen !== this.gen) return;
+      }
+    } catch (e) {
+      this.onFrameError(gen, e);
+    }
+    if (this.qHead === this.queue.length) {
+      this.queue = [];
+      this.qHead = 0;
+    } else if (this.qHead > 1024 && this.qHead * 2 > this.queue.length) {
+      this.queue = this.queue.slice(this.qHead);
+      this.qHead = 0;
     }
   }
 
@@ -339,14 +436,12 @@ export class ViewerConnection {
         this.sendBody(msg.dirFilesReq(c.reqId, c.scanId, c.dirId, c.limit));
         break;
       case "applied": {
-        // only credit bytes this connection delivered (clamp against stale reports after a reconnect)
-        const n = Math.min(Math.max(0, Math.floor(c.n)), this.inflight);
-        this.inflight -= n;
-        this.pendingCredit += n;
-        if (this.pendingCredit >= CREDIT_FLUSH) {
-          this.sendBody(msg.credit(this.pendingCredit));
-          this.pendingCredit = 0;
-        }
+        // one report per fully applied batch: frees a pacing slot, returns its bytes.
+        // Reports for batches an earlier connection delivered must not touch this one's counters.
+        if (c.gen !== undefined && c.gen !== this.gen) break;
+        if (this.outstanding > 0) this.outstanding--;
+        this.credit(Math.max(0, Math.floor(c.n)));
+        this.pump();
         break;
       }
       case "takeOver":
@@ -361,6 +456,7 @@ export class ViewerConnection {
         this.terminal = true;
         this.clearTimers();
         this.gen++;
+        this.resetQueue();
         this.killSocket(1000);
         this.state({ s: "closed", reason: "closed" });
         break;

@@ -31,6 +31,7 @@ export class SurveyGrid {
   private lastStep = 0;
   private ro: ResizeObserver;
   private running = false;
+  private wanted = true;
   private seed = 0x9e3779b9;
 
   constructor(private canvas: HTMLCanvasElement, private opts: { reducedMotion: boolean; color?: string; alpha?: number }) {
@@ -54,8 +55,19 @@ export class SurveyGrid {
 
   private onVis = (): void => {
     if (document.hidden) this.stop();
-    else if (!this.opts.reducedMotion) this.start();
+    else if (!this.opts.reducedMotion && this.wanted) this.start();
   };
+
+  /** animate only while wanted (scanning, main thread keeping up); otherwise hold the last frame */
+  setRunning(on: boolean): void {
+    this.wanted = on;
+    if (on && !this.opts.reducedMotion && !document.hidden) this.start();
+    else if (!on) {
+      const was = this.running;
+      this.stop();
+      if (was) this.draw(performance.now());
+    }
+  }
 
   private start(): void {
     if (this.running) return;

@@ -48,13 +48,14 @@ export class ListView {
   private depthOf = new Uint8Array(1024);
   private count = 0;
   private expanded = new Set<number>();
-  private sortCache = new Map<number, number[]>();
-  private sortVersion = -1;
+  /** dir → children ordered by size, valid while store.touched[dir] <= at */
+  private sortCache = new Map<number, { at: number; list: number[] }>();
   private hueCache = new Map<number, number>();
   private sizer: HTMLDivElement;
   private root = -1;
   private rebuildTimer = 0;
   private lastRebuild = 0;
+  private lastRebuildMs = 0;
   private ro: ResizeObserver;
   private disposers: (() => void)[] = [];
   private loadingFiles = new Set<number>();
@@ -77,6 +78,8 @@ export class ListView {
     this.disposers.push(
       ctl.onReset(() => {
         this.expanded.clear();
+        this.sortCache.clear();
+        this.hueCache.clear();
         this.loadingFiles.clear();
         host.scrollTop = 0;
       }),
@@ -119,17 +122,12 @@ export class ListView {
 
   private sorted = (n: number): number[] => {
     const st = this.ctl.store;
-    if (this.sortVersion !== st.version) {
-      this.sortCache.clear();
-      this.hueCache.clear();
-      this.sortVersion = st.version;
-    }
-    let s = this.sortCache.get(n);
-    if (!s) {
-      s = st.sortedChildren(n).filter((c) => st.size(c) > 0 || st.kind[c] === KIND_DIR);
-      this.sortCache.set(n, s);
-    }
-    return s;
+    const hit = this.sortCache.get(n);
+    // a dir's order only changes when something under it was touched since the last sort
+    if (hit && st.touched[n] <= hit.at) return hit.list;
+    const list = st.sortedChildren(n).filter((c) => st.size(c) > 0 || st.kind[c] === KIND_DIR);
+    this.sortCache.set(n, { at: st.version, list });
+    return list;
   };
 
   private hue(n: number): number {
@@ -143,10 +141,12 @@ export class ListView {
 
   private schedule(): void {
     if (this.rebuildTimer) return;
-    const due = Math.max(0, this.lastRebuild + 300 - performance.now());
+    // ≥ 300 ms, ≈ 8× the measured rebuild cost, ≤ 2 s
+    const every = Math.min(2000, Math.max(300, 8 * this.lastRebuildMs));
+    const due = Math.max(0, this.lastRebuild + every - performance.now());
     this.rebuildTimer = window.setTimeout(() => {
       this.rebuildTimer = 0;
-      this.rebuild();
+      this.rebuild(false);
     }, due);
   }
 
@@ -170,12 +170,15 @@ export class ListView {
     }
   }
 
-  rebuild(): void {
-    this.lastRebuild = performance.now();
+  /** `force` refills every visible row; streaming updates rely on the per-row key instead */
+  rebuild(force = true): void {
+    const t0 = performance.now();
+    this.lastRebuild = t0;
     this.count = 0;
     if (this.root >= 0 && this.ctl.store.root >= 0) this.walk(this.root, 0);
     this.sizer.style.height = `${this.count * ROW}px`;
-    this.render(true);
+    this.render(force);
+    this.lastRebuildMs = performance.now() - t0;
   }
 
   private reveal(node: number): void {
@@ -307,7 +310,7 @@ export class ListView {
       const n = this.flat[i];
       const d = this.depthOf[i];
       if (n === sel) activeId = r.el.id;
-      const key = `${i}:${n}:${st.version}:${units}:${this.expanded.has(n) ? 1 : 0}:${n === sel ? 1 : 0}:${this.loadingFiles.has(st.parent[n]) ? 1 : 0}`;
+      const key = `${i}:${n}:${st.touched[n]}:${st.parent[n] >= 0 ? st.touched[st.parent[n]] : 0}:${units}:${this.expanded.has(n) ? 1 : 0}:${n === sel ? 1 : 0}:${this.loadingFiles.has(st.parent[n]) ? 1 : 0}`;
       if (force || r.key !== key) {
         r.key = key;
         r.node = n;

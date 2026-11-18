@@ -54,6 +54,7 @@ export function Results({ ctl, embedded }: { ctl: Controller; embedded: boolean 
       interactive: true,
       reducedMotion: reduced,
       units: () => ctl.units.peek(),
+      backlog: () => ctl.ingest.backlog,
       onHover: (n) => (ctl.hovered.value = n),
       onSelect: (n) => (ctl.selected.value = n),
       onZoom: (n) => {
@@ -61,9 +62,18 @@ export function Results({ ctl, embedded }: { ctl: Controller; embedded: boolean 
         ctl.selected.value = n;
       },
     });
+    const syncSurvey = () => survey.setRunning(ctl.phase.peek() === "scanning" && ctl.ingest.backlog === 0);
+    syncSurvey();
     view.reset(ctl.zoom.peek() >= 0 ? ctl.zoom.peek() : ctl.store.root);
     const offs = [
-      ctl.onStore(() => view.invalidate()),
+      ctl.onStore(() => {
+        view.invalidate();
+        syncSurvey();
+      }),
+      effect(() => {
+        ctl.phase.value;
+        syncSurvey();
+      }),
       ctl.onReset(() => {
         view.reset(ctl.store.root);
       }),

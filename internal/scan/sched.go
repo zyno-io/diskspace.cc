@@ -5,6 +5,8 @@ package scan
 import (
 	"sync"
 	"sync/atomic"
+
+	"github.com/zyno-io/diskspace.cc/internal/prio"
 )
 
 // foldGroup tracks outstanding folded jobs under one announced target.
@@ -146,6 +148,9 @@ func (s *Scanner) wake(n int) {
 
 func (w *worker) loop() {
 	s := w.s
+	if s.opts.Priority == prio.Low {
+		_ = prio.LockThreadLow()
+	}
 	for {
 		j, ok := w.next()
 		if !ok {

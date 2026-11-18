@@ -103,6 +103,7 @@ func launch(path string) error {
 		cmd = exec.Command("open", path)
 	case "windows":
 		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", path)
+		normalPriority(cmd) // don't hand the browser the scanner's low priority
 	default:
 		cmd = exec.Command("xdg-open", path)
 	}

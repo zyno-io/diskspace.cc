@@ -134,8 +134,8 @@ export class RealSession implements Session {
   dirFiles(scanId: number, dirId: number, limit = 500): Promise<DirFiles> {
     return this.request(this.files, (reqId) => ({ t: "dirFiles", reqId, scanId, dirId, limit }));
   }
-  applied(wireBytes: number): void {
-    this.send({ t: "applied", n: wireBytes });
+  applied(wireBytes: number, gen?: number): void {
+    this.send({ t: "applied", n: wireBytes, gen });
   }
   takeOver(): void {
     this.send({ t: "takeOver" });

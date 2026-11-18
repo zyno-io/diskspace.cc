@@ -191,6 +191,8 @@ export interface NodeBatch {
   records: NodeRecord[];
   /** ciphertext bytes this batch represents; UI calls session.applied(bytes) after ingesting */
   wireBytes: number;
+  /** connection generation that delivered it; acks from an older connection are ignored */
+  gen?: number;
 }
 
 export interface DirFiles {
@@ -235,7 +237,7 @@ export interface Session {
   browse(path: string): Promise<BrowseResult>;
   dirFiles(scanId: number, dirId: number, limit?: number): Promise<DirFiles>;
   /** flow control: report ciphertext bytes the UI has finished applying */
-  applied(wireBytes: number): void;
+  applied(wireBytes: number, gen?: number): void;
   /** reconnect after being superseded */
   takeOver(): void;
   close(): void;

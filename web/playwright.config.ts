@@ -8,5 +8,5 @@ export default defineConfig({
   expect: { timeout: 60_000 },
   workers: 1,
   reporter: "line",
-  use: { baseURL: process.env.BASE_URL ?? "http://localhost:5199", browserName: "chromium" },
+  use: { baseURL: process.env.BASE_URL ?? "http://localhost:5199", browserName: (process.env.E2E_BROWSER as "chromium" | "webkit" | "firefox" | undefined) ?? "chromium" },
 });
