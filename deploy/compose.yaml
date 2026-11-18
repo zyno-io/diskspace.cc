@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: MIT
+# Reference production compose file for the diskspace relay. Lives at
+# /opt/diskspace/compose.yaml on the host; see deploy/README.md.
+name: diskspace
+services:
+  diskspace-relay:
+    image: ghcr.io/zyno-io/diskspace-relay:latest
+    command: ["--listen", ":8080", "--public-url", "https://diskspace.cc", "--trust-proxy"]
+    networks: [internal, tunnel]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped
+
+networks:
+  internal:
+  tunnel:
+    external: true
+    name: cloudflared-diskspace

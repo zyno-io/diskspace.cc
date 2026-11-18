@@ -444,3 +444,15 @@ jobs:
             "${tags[@]}" \
             -f Dockerfile.goreleaser \
             docker-stage
+
+  # Full releases only (no "-" in the tag). The relay image is pushed at the end
+  # of publish-release, so this must come after it. See deploy/README.md.
+  deploy:
+    needs: publish-release
+    if: ${{ !contains(github.ref_name, '-') }}
+    permissions:
+      contents: read
+    uses: ./.github/workflows/deploy.yml
+    with:
+      tag: ${{ github.ref_name }}
+    secrets: inherit

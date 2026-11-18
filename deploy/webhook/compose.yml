@@ -1,0 +1,55 @@
+# SPDX-License-Identifier: MIT
+name: diskspace-deploy
+services:
+  deploy:
+    build: .
+    # Join the network the tunnel connector (or reverse proxy) uses to reach
+    # the relay; it routes the hook path to http://diskspace-deploy:9000. No host ports.
+    networks:
+      production:
+        aliases: [diskspace-deploy]
+    environment:
+      GOMAXPROCS: "2"
+      GOMEMLIMIT: 48MiB
+      DISKSPACE_DEPLOY_DIR: ${DISKSPACE_DEPLOY_DIR:-/opt/diskspace}
+      DISKSPACE_DEPLOY_COMPOSE_FILE: ${DISKSPACE_DEPLOY_COMPOSE_FILE:-compose.yaml}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Keep the host path identical inside the sidecar so Compose resolves
+      # relative bind mounts exactly as it did when invoked through SSH.
+      - type: bind
+        source: ${DISKSPACE_DEPLOY_DIR:-/opt/diskspace}
+        target: ${DISKSPACE_DEPLOY_DIR:-/opt/diskspace}
+        read_only: true
+        bind:
+          create_host_path: false
+    secrets:
+      - deploy_secret
+    # limitproxy caps request bodies at 4 KiB and open connections at 16,
+    # because webhook buffers whole bodies before checking the signature.
+    # That bounds memory well under this cap, so unauthenticated traffic can't
+    # get the container OOM-killed mid-deploy. The Go settings keep the
+    # servers' threads and heaps small on many-core hosts (pids_limit is
+    # shared with the deploy's docker compose).
+    mem_limit: 128m
+    memswap_limit: 128m
+    pids_limit: 64
+    read_only: true
+    tmpfs:
+      - /run
+      - /tmp
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    # docker-init reaps orphans (limitproxy is not an init) and exits when
+    # limitproxy does, so the restart policy recovers the pair.
+    init: true
+    restart: unless-stopped
+
+networks:
+  production:
+    external: true
+    name: ${DISKSPACE_DEPLOY_NETWORK:-cloudflared-diskspace}
+
+secrets:
+  deploy_secret:
+    file: ${DISKSPACE_DEPLOY_SECRET_FILE:?Set DISKSPACE_DEPLOY_SECRET_FILE to the private deployment secret file}

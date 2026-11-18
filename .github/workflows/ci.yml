@@ -96,3 +96,19 @@ jobs:
         run: shellcheck scripts/*.sh
       - name: Lint the generated bootstrap script
         run: SHELLCHECK=1 go test -count=1 -run TestRenderedScriptShellcheck -v ./internal/relay/
+
+  # Hermetic: builds the sidecar and drives it with a fake docker command; no
+  # Docker socket is mounted and nothing touches production.
+  deploy-hook:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Lint deploy scripts
+        run: shellcheck deploy/webhook/*.sh
+      - name: Build deployment sidecar
+        run: docker build -t diskspace-deploy-hook:test deploy/webhook
+      - name: Check signed HTTPS requests and fixed deployment command
+        run: python3 deploy/webhook/test_webhook.py
