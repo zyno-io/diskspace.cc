@@ -9,6 +9,8 @@ services:
       production:
         aliases: [diskspace-deploy]
     environment:
+      GOMAXPROCS: "2"
+      GOMEMLIMIT: 48MiB
       DISKSPACE_DEPLOY_DIR: ${DISKSPACE_DEPLOY_DIR:-/opt/diskspace}
       DISKSPACE_DEPLOY_COMPOSE_FILE: ${DISKSPACE_DEPLOY_COMPOSE_FILE:-compose.yaml}
     volumes:
@@ -23,10 +25,12 @@ services:
           create_host_path: false
     secrets:
       - deploy_secret
-    # limitproxy (PID 1) caps request bodies at 4 KiB because webhook buffers
-    # whole bodies before checking the signature. The memory cap is a backstop:
-    # a runaway can only OOM-kill this container (restart policy recovers it),
-    # not the host.
+    # limitproxy caps request bodies at 4 KiB and open connections at 16,
+    # because webhook buffers whole bodies before checking the signature.
+    # That bounds memory well under this cap, so unauthenticated traffic can't
+    # get the container OOM-killed mid-deploy. The Go settings keep the
+    # servers' threads and heaps small on many-core hosts (pids_limit is
+    # shared with the deploy's docker compose).
     mem_limit: 128m
     memswap_limit: 128m
     pids_limit: 64

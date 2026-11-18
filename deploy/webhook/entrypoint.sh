@@ -11,6 +11,6 @@ export DISKSPACE_DEPLOY_SECRET
 export DISKSPACE_DEPLOY_DIR="${DISKSPACE_DEPLOY_DIR:-/opt/diskspace}"
 export DISKSPACE_DEPLOY_COMPOSE_FILE="${DISKSPACE_DEPLOY_COMPOSE_FILE:-compose.yaml}"
 cd "$DISKSPACE_DEPLOY_DIR"
-# limitproxy (PID 1) listens on :9000, caps request bodies at 4 KiB and proxies
+# limitproxy listens on :9000, caps request bodies (4 KiB) and connections, and proxies
 # to webhook on loopback. The secret reaches webhook via env only.
 exec limitproxy -- webhook -hooks /etc/diskspace-deploy/hooks.json.tmpl -template -ip 127.0.0.1 -port 9001 -http-methods POST

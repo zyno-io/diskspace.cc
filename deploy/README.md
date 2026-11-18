@@ -50,9 +50,10 @@ In the Cloudflare dashboard, add a public hostname to the tunnel:
 Order it before the catch-all `diskspace.cc` route, or the relay will receive
 the request instead.
 
-Request bodies are capped at 4 KiB inside the sidecar. `webhook` buffers whole
-bodies before checking the signature, so `limitproxy` (PID 1) answers 413 for
-larger bodies, including over-long chunked ones, and forwards the rest to
+Request bodies are capped at 4 KiB and open connections at 16 inside the
+sidecar. `webhook` buffers whole bodies before checking the signature, so
+`limitproxy` answers 413 for larger bodies, including over-long chunked ones,
+holds further connections in the accept backlog, and forwards the rest to
 `webhook` on loopback. A real request is about 60 bytes. No WAF rule is needed.
 
 ## GitHub configuration
