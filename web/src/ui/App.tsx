@@ -48,7 +48,9 @@ export function UpdateBanner({ version, href, onDismiss }: { version: string; hr
   return (
     <aside class="update-banner" role="region" aria-label="Update available">
       <p>
-        A newer diskspace (v{version}) is available. <a href={href}>How to update</a>
+        A newer diskspace (v{version}) is available. <a href={href} target="_blank" rel="noopener noreferrer">
+          How to update
+        </a>
       </p>
       <button
         class="btn btn-quiet"

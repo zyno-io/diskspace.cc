@@ -209,7 +209,11 @@ function TopBar({ ctl, embedded }: { ctl: Controller; embedded: boolean }) {
       </div>
       <div class="actions">
         {phase === "scanning" ? (
-          ctl.canPause.value ? (
+          ctl.stopping.value ? (
+            <button class="btn" disabled>
+              Stopping…
+            </button>
+          ) : ctl.canPause.value ? (
             paused ? (
               <>
                 <button class="btn btn-primary" disabled={pending} onClick={() => ctl.resume()}>

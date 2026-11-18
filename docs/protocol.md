@@ -100,7 +100,7 @@ Type bytes (`internal/proto/types.go`, `web/src/protocol/types.ts`). JSON payloa
 | v2a | 0x88 | PING | none |
 | v2a | 0x89 | SCAN_PAUSE | `{scanId,paused}`; an idempotent set, not a toggle; only if `AGENT_INFO.features.pause` |
 
-Order on a fresh connection: STREAM_INIT, AGENT_INFO, then replay (SCAN_STARTED, SCAN_STATE if paused, every logged NODES, then SCAN_DONE or SCAN_ENDED if the scan had already ended), REPLAY_DONE, then live traffic. A canceled scan replays its NODES too, so a reconnect after Stop shows the partial tree. REPLAY_DONE always follows the end message. The viewer rejects any other first messages. On reconnect the replay repeats from the start of the scan; consumers must treat a SCAN_STARTED for an already-known scanId as a restart.
+Order on a fresh connection: STREAM_INIT, AGENT_INFO, then replay (SCAN_STARTED, SCAN_STATE if paused, every logged NODES, then SCAN_DONE or SCAN_ENDED if the scan had already ended), REPLAY_DONE, then live traffic. A canceled scan replays its NODES too, so a reconnect after Stop shows the partial tree. REPLAY_DONE follows the end message only when the scan had already ended at attach time; a scan still running at attach gets REPLAY_DONE as soon as the replay has delivered what was in the log then, and any end message comes later, live. A live viewer of a scan it stopped receives SCAN_ENDED promptly, without the NODES it has not yet been sent. An ended scan has no pause state: the agent sends no SCAN_STATE for it. The viewer rejects any other first messages. On reconnect the replay repeats from the start of the scan; consumers must treat a SCAN_STARTED for an already-known scanId as a restart.
 
 ## 7. NODES and DIR_FILES
 

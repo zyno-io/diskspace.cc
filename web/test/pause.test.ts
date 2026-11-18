@@ -139,3 +139,30 @@ describe("update check", () => {
     expect(isDismissed("0.1.2")).toBe(false); // no localStorage in node
   });
 });
+
+describe("controller stop", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it("a SCAN_STATE that arrives after Stop cannot bring the running UI back", () => {
+    const { s, ctl } = setup();
+    ctl.stop();
+    expect(ctl.stopping.value).toBe(true);
+    s.ev.scanState({ scanId: 1, paused: false, elapsedMs: 9 });
+    expect(ctl.paused.value).toBe(false);
+    ctl.pause();
+    expect(s.pauses).toEqual([]);
+    s.ev.scanEnded({ scanId: 1, reason: "canceled" });
+    expect(ctl.stopping.value).toBe(false);
+    expect(ctl.phase.value).toBe("stopped");
+  });
+
+  it("stopping a paused scan drops the paused view and clears on a new scan", () => {
+    const { s, ctl } = setup();
+    s.ev.scanState({ scanId: 1, paused: true, elapsedMs: 1 });
+    ctl.stop();
+    expect(ctl.paused.value).toBe(false);
+    s.ev.scanStarted(STARTED(2));
+    expect(ctl.stopping.value).toBe(false);
+  });
+});

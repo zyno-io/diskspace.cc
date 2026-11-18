@@ -37,6 +37,8 @@ export class Controller {
   readonly stateElapsedMs = signal(0);
   /** newer stable version than the agent's, once known and not dismissed */
   readonly latest = signal<string | null>(null);
+  /** Stop was pressed; Pause/Resume are hidden and SCAN_STATE ignored until the end arrives */
+  readonly stopping = signal(false);
   /** the agent can pause (older agents cannot) */
   readonly canPause = computed(() => this.info.value?.features?.pause === true);
 
@@ -143,7 +145,15 @@ export class Controller {
 
   stop(): void {
     const s = this.scan.value;
-    if (s && !this.done.value && !this.ended.value) this.session.scanCancel(s.scanId);
+    if (s && !this.done.value && !this.ended.value) {
+      batch(() => {
+        this.stopping.value = true;
+        this.paused.value = false;
+        this.pausePending.value = false;
+      });
+      window.clearTimeout(this.pendingTimer);
+      this.session.scanCancel(s.scanId);
+    }
   }
 
   /** ask the agent to pause; the UI changes when its SCAN_STATE arrives */
@@ -155,7 +165,7 @@ export class Controller {
   }
   private requestPause(paused: boolean): void {
     const s = this.scan.value;
-    if (!s || !this.canPause.value || this.done.value || this.ended.value || this.pausePending.value || this.paused.value === paused) return;
+    if (!s || this.stopping.value || !this.canPause.value || this.done.value || this.ended.value || this.pausePending.value || this.paused.value === paused) return;
     this.pausePending.value = true;
     window.clearTimeout(this.pendingTimer);
     // never leave the button stuck if the reply is lost
@@ -168,10 +178,11 @@ export class Controller {
     this.pendingTimer = 0;
     this.paused.value = false;
     this.pausePending.value = false;
+    this.stopping.value = false;
   }
 
   private onScanState(m: ScanState): void {
-    if (m.scanId !== this.store.scanId || this.done.value || this.ended.value) return;
+    if (m.scanId !== this.store.scanId || this.done.value || this.ended.value || this.stopping.value) return;
     window.clearTimeout(this.pendingTimer);
     this.pendingTimer = 0;
     batch(() => {
