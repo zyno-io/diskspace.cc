@@ -312,10 +312,12 @@ func readNames(fd int, buf []byte, names []string) ([]string, bool, error) {
 
 // ensureDir makes sure path is a real directory (not a symlink) owned by uid
 // (uid < 0: any owner), creating it with mode if missing. Creation and checks
-// go through a no-follow fd of the parent; a directory created while running
-// as root is handed to uid/gid, one that already existed is never chowned.
+// go through one fd of the parent (which may itself be reached through a
+// symlink, e.g. a linked ~/.local/share) and never follow path's own last
+// component; a directory created while running as root is handed to uid/gid,
+// one that already existed is never chowned.
 func ensureDir(path string, mode uint32, uid, gid int) error {
-	pfd, err := openDir(filepath.Dir(path))
+	pfd, err := unix.Open(filepath.Dir(path), unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
 	if err != nil {
 		return err
 	}
