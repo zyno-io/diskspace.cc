@@ -105,6 +105,12 @@ func TestElevatedArgs(t *testing.T) {
 	if args[0] != "agent" || args[1] != "--ipc" || args[2] != "127.0.0.1:9" || args[4] != "/tok" {
 		t.Fatal(args)
 	}
+	if got := AgentArgsFor(o2, 1, "https://r", "127.0.0.1:9", "/tok", "cli"); got[5] != "--launcher" || got[6] != "cli" {
+		t.Fatal(got)
+	}
+	if pc, err := ParseArgs(AgentArgsFor(o2, 1, "https://r", "127.0.0.1:9", "/tok", "cli"), "", io.Discard); err != nil || pc.Launcher != "cli" {
+		t.Fatalf("%v %+v", err, pc)
+	}
 	p, err := ParseArgs(args, "", io.Discard)
 	if err != nil || !p.AgentMode || !p.NoCwd || !p.NoRelay || !p.NoElevate || p.ParentPID != 1 || p.Relay != "https://r" {
 		t.Fatalf("%v %+v", err, p)

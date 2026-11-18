@@ -87,9 +87,10 @@ Type bytes (`internal/proto/types.go`, `web/src/protocol/types.ts`). JSON payloa
 | a2v | 0x14 | SCAN_ENDED | `{scanId,reason,message?}` |
 | a2v | 0x15 | DIR_FILES | binary |
 | a2v | 0x16 | REPLAY_DONE | none |
+| a2v | 0x17 | SCAN_STATE | `{scanId,paused,elapsedMs}`; only to viewers with `caps.scanState` |
 | a2v | 0x7E | BYE | `{reason}` (`superseded`, `shutdown`, `idle`) |
 | a2v | 0x7F | ERROR | `{code,message}` (e.g. `replay_unavailable`) |
-| v2a | 0x81 | CLIENT_HELLO | `{proto:1,ua,caps:{zstdStream}}` (frame #0) |
+| v2a | 0x81 | CLIENT_HELLO | `{proto:1,ua,caps:{zstdStream,scanState?}}` (frame #0) |
 | v2a | 0x82 | GET_ROOTS | none |
 | v2a | 0x83 | BROWSE | `{reqId,path}` |
 | v2a | 0x84 | SCAN_START | `{path,crossMounts:false,topFiles?,minFileBytes?}` |
@@ -97,8 +98,9 @@ Type bytes (`internal/proto/types.go`, `web/src/protocol/types.ts`). JSON payloa
 | v2a | 0x86 | DIR_FILES_REQ | `{reqId,scanId,dirId,limit<=10000}` |
 | v2a | 0x87 | CREDIT | `{n}` |
 | v2a | 0x88 | PING | none |
+| v2a | 0x89 | SCAN_PAUSE | `{scanId,paused}`; an idempotent set, not a toggle; only if `AGENT_INFO.features.pause` |
 
-Order on a fresh connection: STREAM_INIT, AGENT_INFO, then replay (SCAN_STARTED, NODES…, optional SCAN_DONE/ENDED), REPLAY_DONE, then live traffic. The viewer rejects any other first messages. On reconnect the replay repeats from the start of the scan; consumers must treat a SCAN_STARTED for an already-known scanId as a restart.
+Order on a fresh connection: STREAM_INIT, AGENT_INFO, then replay (SCAN_STARTED, SCAN_STATE if paused, every logged NODES, then SCAN_DONE or SCAN_ENDED if the scan had already ended), REPLAY_DONE, then live traffic. A canceled scan replays its NODES too, so a reconnect after Stop shows the partial tree. REPLAY_DONE follows the end message only when the scan had already ended at attach time; a scan still running at attach gets REPLAY_DONE as soon as the replay has delivered what was in the log then, and any end message comes later, live. A live viewer of a scan it stopped receives SCAN_ENDED promptly, without the NODES it has not yet been sent. An ended scan has no pause state: the agent sends no SCAN_STATE for it. The viewer rejects any other first messages. On reconnect the replay repeats from the start of the scan; consumers must treat a SCAN_STARTED for an already-known scanId as a restart.
 
 ## 7. NODES and DIR_FILES
 
@@ -123,3 +125,15 @@ name    := len:uv (≤ 4096) bytes
 - Decoders are strict: counts must be plausible against the remaining bytes (minimum element size), names ≤ 4096, no trailing bytes, unknown record kinds rejected.
 - Batching: the agent closes a NODES message at 64 KiB or 100 ms (first of a scan at 30 ms).
 - `ownAlloc/ownApparent/ownFiles` cover all non-directory entries directly in the directory (after hardlink dedup) plus its own blocks; the viewer derives the "other files" bucket as own minus the listed files.
+
+## 8. Extensions: capabilities, pause, latest release
+
+The protocol version stays 1 and must match exactly. Optional features are negotiated instead, so a new viewer can meet an old agent and the other way round (the relay serves the viewer, agents are separate binaries):
+
+- Viewer to agent: `CLIENT_HELLO.caps.scanState: true` says the viewer understands SCAN_STATE.
+- Agent to viewer: `AGENT_INFO.features` lists what the agent accepts (`{pause: true}`); `AGENT_INFO.scan.paused` (omitted when false) reports a paused running scan.
+- **Extension rule:** each side sends a message type introduced after v0.1.x only if the peer advertised it. Unknown JSON fields are ignored on both sides, but an unknown message type stays fatal (the agent closes with 4402, the viewer shows a protocol error). Never rely on the peer ignoring a type.
+
+Pause: the viewer sends `SCAN_PAUSE {scanId, paused}`. The agent applies it to the current running scan (any other request changes nothing) and always answers the active viewer with `SCAN_STATE {scanId, paused, elapsedMs}` on the control queue, which is never credit-gated. `elapsedMs` and `PROGRESS.elapsedMs` / `SCAN_DONE.ms` leave out paused time, and no PROGRESS is sent while paused. A viewer that did not advertise `scanState` cannot see or end a pause, so attaching one to a paused scan resumes it.
+
+Latest release: the relay serves `GET /v1/latest` as `{"version":"0.1.2"}` (the newest stable release; empty when unknown). It is plain HTTP on the viewer's own origin, outside the E2E channel, and carries nothing about the session. Viewers, the desktop app and the CLI compare it with `AGENT_INFO.version` (dev builds and prereleases of the same version are ignored). A viewer served by the agent itself has no relay, so no banner.

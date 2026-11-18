@@ -12,7 +12,7 @@ import { SurveyGrid } from "../viz/survey";
 import { TreemapView } from "../viz/treemap";
 import type { Controller } from "./controller";
 import { HostChip } from "./HostChip";
-import { Back } from "./icons";
+import { Back, Pause, Play } from "./icons";
 import { prefersReducedMotion } from "./motion";
 import { TreeList } from "./TreeList";
 import { Wordmark } from "./Wordmark";
@@ -55,6 +55,7 @@ export function Results({ ctl, embedded }: { ctl: Controller; embedded: boolean 
       reducedMotion: reduced,
       units: () => ctl.units.peek(),
       backlog: () => ctl.ingest.backlog,
+      paused: () => ctl.paused.peek(),
       onHover: (n) => (ctl.hovered.value = n),
       onSelect: (n) => (ctl.selected.value = n),
       onZoom: (n) => {
@@ -62,7 +63,7 @@ export function Results({ ctl, embedded }: { ctl: Controller; embedded: boolean 
         ctl.selected.value = n;
       },
     });
-    const syncSurvey = () => survey.setRunning(ctl.phase.peek() === "scanning" && ctl.ingest.backlog === 0);
+    const syncSurvey = () => survey.setRunning(ctl.phase.peek() === "scanning" && !ctl.paused.peek() && ctl.ingest.backlog === 0);
     syncSurvey();
     view.reset(ctl.zoom.peek() >= 0 ? ctl.zoom.peek() : ctl.store.root);
     const offs = [
@@ -72,6 +73,7 @@ export function Results({ ctl, embedded }: { ctl: Controller; embedded: boolean 
       }),
       effect(() => {
         ctl.phase.value;
+        ctl.paused.value;
         syncSurvey();
       }),
       ctl.onReset(() => {
@@ -130,6 +132,8 @@ function TopBar({ ctl, embedded }: { ctl: Controller; embedded: boolean }) {
   const scan = ctl.scan.value;
   const prog = ctl.progress.value;
   const info = ctl.info.value;
+  const paused = phase === "scanning" && ctl.paused.value;
+  const pending = ctl.pausePending.value;
   const scanned = phase === "scanning" ? Math.max(prog?.alloc ?? 0, st.root >= 0 ? st.totAlloc[st.root] : 0) : st.root >= 0 ? st.totAlloc[st.root] : 0;
   const volUsed = scan?.volume?.used ?? 0;
   const frac = volUsed > 0 ? Math.min(1, scanned / volUsed) : 0;
@@ -160,7 +164,7 @@ function TopBar({ ctl, embedded }: { ctl: Controller; embedded: boolean }) {
         </button>
       )}
       <span class="wm-slot">
-        <Wordmark size="bar" stretch={stretch} label="diskspace.cc" fit={150} />
+        <Wordmark size="bar" stretch={stretch} label="diskspace.cc" fit={150} hold={paused} />
       </span>
       <nav class="crumbs" aria-label="Zoom path">
         {info && (
@@ -205,9 +209,30 @@ function TopBar({ ctl, embedded }: { ctl: Controller; embedded: boolean }) {
       </div>
       <div class="actions">
         {phase === "scanning" ? (
-          <button class="btn" onClick={() => ctl.stop()}>
-            Stop scan
-          </button>
+          ctl.stopping.value ? (
+            <button class="btn" disabled>
+              Stopping…
+            </button>
+          ) : ctl.canPause.value ? (
+            paused ? (
+              <>
+                <button class="btn btn-primary" disabled={pending} onClick={() => ctl.resume()}>
+                  <Play /> {pending ? "Resuming…" : "Resume"}
+                </button>
+                <button class="btn btn-quiet" onClick={() => ctl.stop()}>
+                  Stop
+                </button>
+              </>
+            ) : (
+              <button class="btn" disabled={pending} onClick={() => ctl.pause()}>
+                <Pause /> {pending ? "Pausing…" : "Pause"}
+              </button>
+            )
+          ) : (
+            <button class="btn" onClick={() => ctl.stop()}>
+              Stop scan
+            </button>
+          )
         ) : (
           <>
             <button class="btn" onClick={() => (ctl.picking.value = true)}>
@@ -220,7 +245,7 @@ function TopBar({ ctl, embedded }: { ctl: Controller; embedded: boolean }) {
         )}
       </div>
       <HostChip info={ctl.info.value} conn={ctl.conn.value} compact />
-      <div class={`progress-line${phase !== "scanning" ? " done" : ""}`} aria-hidden="true">
+      <div class={`progress-line${phase !== "scanning" ? " done" : paused ? " paused" : ""}`} aria-hidden="true">
         <i style={{ transform: `scaleX(${phase === "scanning" ? frac : 1})` }} />
       </div>
     </header>
@@ -239,6 +264,16 @@ function Meter({ ctl }: { ctl: Controller }) {
   if (phase === "scanning") {
     const files = Math.max(prog?.files ?? 0, st.root >= 0 ? st.totFiles[st.root] : 0);
     const dirs = Math.max(prog?.dirs ?? 0, st.root >= 0 ? st.totDirs[st.root] + 1 : 0);
+    if (ctl.paused.value) {
+      return (
+        <div class="meter" role="status" aria-live="polite">
+          <div class="meter-main">
+            <b>Paused</b> · <b>{formatCompact(files)}</b> files · <b>{formatCompact(dirs)}</b> folders · {formatDuration(ctl.stateElapsedMs.value)}
+          </div>
+          <div class="meter-path meter-plain">Resume to keep scanning. Results so far are shown.</div>
+        </div>
+      );
+    }
     return (
       <div class="meter" role="status" aria-live="off">
         <div class="meter-main">

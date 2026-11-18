@@ -44,6 +44,8 @@ export interface TreemapOptions {
   onZoom?(node: number): void;
   /** queued, not yet applied ingest items; > 0 means the main thread is busy */
   backlog?(): number;
+  /** the scan is paused: no layout tweens, tooltips say so */
+  paused?(): boolean;
   layout?: Partial<LayoutOptions>;
 }
 
@@ -280,7 +282,7 @@ export class TreemapView {
     }
     const t0 = performance.now();
     this.lastLayout = t0;
-    const busy = (this.o.backlog?.() ?? 0) > 0 || this.lastLayoutMs + this.lastDrawMs > TWEEN_COST_MS;
+    const busy = (this.o.backlog?.() ?? 0) > 0 || (this.o.paused?.() ?? false) || this.lastLayoutMs + this.lastDrawMs > TWEEN_COST_MS;
     const animate = tween && !busy && !this.o.reducedMotion && this.cur.L.count > 0;
     const prev = this.cur;
     this.cur = this.old;
@@ -777,7 +779,7 @@ export class TreemapView {
       else {
         const f = st.files(node), d = st.dirs(node);
         parts.push(d > 0 ? `${plural(f, "file", "files")}, ${plural(d, "folder", "folders")}` : plural(f, "file", "files"));
-        if (!st.isSettled(node)) parts.push("still scanning");
+        if (!st.isSettled(node)) parts.push(this.o.paused?.() ? "scan paused" : "still scanning");
       }
     } else if (kind === KIND_SYNTH) {
       parts.push("Used on this volume but outside the scan: other volumes, local snapshots, purgeable space");

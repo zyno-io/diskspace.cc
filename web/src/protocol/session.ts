@@ -69,6 +69,9 @@ export class RealSession implements Session {
       case "scanEnded":
         ev.scanEnded(e.v);
         break;
+      case "scanState":
+        ev.scanState(e.v);
+        break;
       case "replayDone":
         ev.replayDone();
         break;
@@ -127,6 +130,9 @@ export class RealSession implements Session {
   }
   scanCancel(scanId: number): void {
     this.send({ t: "scanCancel", scanId });
+  }
+  scanPause(scanId: number, paused: boolean): void {
+    this.send({ t: "scanPause", scanId, paused });
   }
   browse(path: string): Promise<BrowseResult> {
     return this.request(this.browses, (reqId) => ({ t: "browse", reqId, path }));

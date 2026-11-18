@@ -20,6 +20,7 @@ export const MSG = {
   SCAN_ENDED: 0x14,
   DIR_FILES: 0x15,
   REPLAY_DONE: 0x16,
+  SCAN_STATE: 0x17,
   BYE: 0x7e,
   ERROR: 0x7f,
   // viewer → agent
@@ -31,6 +32,7 @@ export const MSG = {
   DIR_FILES_REQ: 0x86,
   CREDIT: 0x87,
   PING: 0x88,
+  SCAN_PAUSE: 0x89,
 } as const;
 
 // ---- flags (mirror internal/proto/records.go) --------------------------------
@@ -68,7 +70,9 @@ export interface AgentInfo {
   home: string;
   autoScan: string | null;
   volumes: Volume[];
-  scan: { id: number; state: "running" | "done" | "canceled" | "error" } | null;
+  scan: { id: number; state: "running" | "done" | "canceled" | "error"; paused?: boolean } | null;
+  /** optional protocol extensions; absent from older agents. The viewer sends a matching message only if advertised. */
+  features?: { pause?: boolean };
 }
 
 export interface ScanOptions {
@@ -109,6 +113,13 @@ export interface ScanDone {
   hardlinksDeduped: number;
   folded: number;
   ms: number;
+}
+
+/** SCAN_STATE (a2v 0x17): pause state; elapsedMs excludes paused time */
+export interface ScanState {
+  scanId: number;
+  paused: boolean;
+  elapsedMs: number;
 }
 
 export interface ScanEnded {
@@ -224,6 +235,7 @@ export interface SessionEvents {
   progress(p: Progress): void;
   scanDone(m: ScanDone): void;
   scanEnded(m: ScanEnded): void;
+  scanState(m: ScanState): void;
   replayDone(): void;
   bye(m: ByeMsg): void;
   error(m: ErrorMsg): void;
@@ -234,6 +246,8 @@ export interface Session {
   start(events: SessionEvents): void;
   scanStart(path: string, opts?: ScanOptions): void;
   scanCancel(scanId: number): void;
+  /** idempotent set (not a toggle); only call when AgentInfo.features.pause */
+  scanPause(scanId: number, paused: boolean): void;
   browse(path: string): Promise<BrowseResult>;
   dirFiles(scanId: number, dirId: number, limit?: number): Promise<DirFiles>;
   /** flow control: report ciphertext bytes the UI has finished applying */

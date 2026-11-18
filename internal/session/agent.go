@@ -45,6 +45,8 @@ const (
 	EvIdle
 	EvError
 	EvScanProgress // Path, Totals{Files,Dirs,Alloc} running counters (~4 Hz)
+	EvScanPaused   // Path, Totals, Ms (elapsed excluding paused time)
+	EvScanResumed  // Path, Totals, Ms
 )
 
 // Event reports session activity to the CLI / IPC layer. Events are delivered
@@ -374,6 +376,7 @@ func (a *Agent) buildInfo() proto.AgentInfo {
 		Launcher:     a.cfg.Launcher,
 		Home:         home,
 		Volumes:      a.volumes(),
+		Features:     proto.Features{Pause: true},
 	}
 	if info.Launcher == "" {
 		info.Launcher = "cli"
@@ -417,8 +420,61 @@ type scanRun struct {
 	done        chan struct{} // closed after the log is finished
 	started     time.Time
 
-	mu    sync.Mutex
-	state string // running | done | canceled | error
+	tickMu      sync.Mutex // serializes the progress ticker with pause/resume
+	mu          sync.Mutex
+	state       string // running | done | canceled | error
+	paused      bool
+	pausedAt    time.Time
+	pausedTotal time.Duration // completed pauses
+}
+
+// elapsedLocked is the scan's running time excluding paused time.
+func (r *scanRun) elapsedLocked(now time.Time) time.Duration {
+	d := now.Sub(r.started) - r.pausedTotal
+	if r.paused {
+		d -= now.Sub(r.pausedAt)
+	}
+	return max(d, 0)
+}
+
+func (r *scanRun) elapsedMs() int64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.elapsedLocked(time.Now()).Milliseconds()
+}
+
+// live reports whether the scan is still running and not being canceled.
+func (r *scanRun) live() bool {
+	r.mu.Lock()
+	st := r.state
+	r.mu.Unlock()
+	return st == "running" && (r.ctx == nil || r.ctx.Err() == nil)
+}
+
+// pauseState reports whether a running scan is paused, and its elapsed ms.
+func (r *scanRun) pauseState() (paused bool, elapsedMs int64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.paused && r.state == "running", r.elapsedLocked(time.Now()).Milliseconds()
+}
+
+// setPause applies the state to a running scan and reports whether it changed.
+func (r *scanRun) setPause(p bool) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.state != "running" || (r.ctx != nil && r.ctx.Err() != nil) || r.paused == p {
+		return false
+	}
+	now := time.Now()
+	if p {
+		r.paused, r.pausedAt = true, now
+		r.scanner.Pause()
+	} else {
+		r.pausedTotal += now.Sub(r.pausedAt)
+		r.paused = false
+		r.scanner.Resume()
+	}
+	return true
 }
 
 func (r *scanRun) setState(s string) {
@@ -450,6 +506,10 @@ func (a *Agent) volumeFor(path string) *proto.VolumeUsage {
 	}
 	return nil
 }
+
+// hookBeforeRun is a test hook called with each new scan before it is attached
+// or started (tests use it to start a scan paused).
+var hookBeforeRun func(*scanRun)
 
 // startScan cancels and drains any running scan, then starts a new one and
 // attaches it to the active viewer.
@@ -497,6 +557,9 @@ func (a *Agent) startScan(opts scan.Options) (*scanRun, error) {
 		state:       "running",
 	}
 	r.ctx, r.cancel = context.WithCancel(a.life)
+	if hookBeforeRun != nil {
+		hookBeforeRun(r)
+	}
 
 	a.mu.Lock()
 	a.cur = r
@@ -514,7 +577,7 @@ func (r *scanRun) progressBody() []byte {
 	st := r.scanner.Progress()
 	b, _ := proto.EncodeMsg(proto.MsgProgress, proto.Progress{
 		ScanID: r.id, Dirs: st.Dirs, Files: st.Files, Alloc: st.Alloc, Apparent: st.Apparent,
-		Errors: st.Errors + st.Denied, ElapsedMs: time.Since(r.started).Milliseconds(), CurrentPath: st.CurrentPath,
+		Errors: st.Errors + st.Denied, ElapsedMs: r.elapsedMs(), CurrentPath: st.CurrentPath,
 	})
 	return b
 }
@@ -545,12 +608,18 @@ func (r *scanRun) run() {
 		for {
 			select {
 			case <-t.C:
-				a.pushProgress(r, r.progressBody())
-				if a.cfg.Events != nil {
-					p := r.scanner.Progress()
-					a.emit(Event{Kind: EvScanProgress, Path: r.path, Ms: time.Since(r.started).Milliseconds(),
-						Totals: &proto.ScanTotals{Alloc: p.Alloc, Apparent: p.Apparent, Files: p.Files, Dirs: p.Dirs}})
+				// tickMu: a pause that lands now waits, so no progress event
+				// follows EvScanPaused
+				r.tickMu.Lock()
+				if paused, _ := r.pauseState(); !paused {
+					a.pushProgress(r, r.progressBody())
+					if a.cfg.Events != nil {
+						p := r.scanner.Progress()
+						a.emit(Event{Kind: EvScanProgress, Path: r.path, Ms: r.elapsedMs(),
+							Totals: &proto.ScanTotals{Alloc: p.Alloc, Apparent: p.Apparent, Files: p.Files, Dirs: p.Dirs}})
+					}
 				}
+				r.tickMu.Unlock()
 			case <-stopTick:
 				return
 			}
@@ -566,7 +635,7 @@ func (r *scanRun) run() {
 	tbMu.Lock()
 	big := tooBig
 	tbMu.Unlock()
-	ms := time.Since(r.started).Milliseconds()
+	ms := r.elapsedMs()
 	switch {
 	case err == nil && !big:
 		body, _ := proto.EncodeMsg(proto.MsgScanDone, proto.ScanDone{
@@ -615,6 +684,77 @@ func (a *Agent) pushProgress(r *scanRun, body []byte) {
 func (a *Agent) cancelScan(id uint64) {
 	if r := a.currentRun(); r != nil && r.id == id {
 		r.cancel()
+	}
+}
+
+// setPaused pauses or resumes the scan with the given id (idempotent). A
+// request for a scan that is not the current running one changes nothing. The
+// active viewer is always told the resulting state.
+// setPaused applies a viewer's SCAN_PAUSE. Only the active viewer may steer
+// the scan: a superseded connection (BYE queued, still draining) is ignored.
+// The check runs under scanMu so it can't interleave with the new viewer's
+// activate → resumeIfPaused.
+func (a *Agent) setPaused(from *viewerConn, id uint64, paused bool) {
+	a.scanMu.Lock()
+	defer a.scanMu.Unlock()
+	a.mu.Lock()
+	active := a.active == from
+	a.mu.Unlock()
+	if !active {
+		return
+	}
+	r := a.currentRun()
+	if r == nil {
+		return
+	}
+	if r.id != id { // stale request: change nothing, report the current state
+		a.sendScanState(r)
+		return
+	}
+	r.tickMu.Lock()
+	defer r.tickMu.Unlock()
+	changed := r.setPause(paused)
+	a.sendScanState(r)
+	if changed {
+		a.emitPause(r, paused)
+	}
+}
+
+// resumeIfPaused resumes r if it is paused (an attaching viewer cannot resume it).
+func (a *Agent) resumeIfPaused(r *scanRun) {
+	a.scanMu.Lock()
+	defer a.scanMu.Unlock()
+	if a.currentRun() != r {
+		return
+	}
+	r.tickMu.Lock()
+	defer r.tickMu.Unlock()
+	if r.setPause(false) {
+		a.sendScanState(r)
+		a.emitPause(r, false)
+	}
+}
+
+func (a *Agent) emitPause(r *scanRun, paused bool) {
+	kind := EvScanResumed
+	if paused {
+		kind = EvScanPaused
+	}
+	p := r.scanner.Progress()
+	a.emit(Event{Kind: kind, Path: r.path, Ms: r.elapsedMs(),
+		Totals: &proto.ScanTotals{Alloc: p.Alloc, Apparent: p.Apparent, Files: p.Files, Dirs: p.Dirs}})
+}
+
+// sendScanState queues SCAN_STATE for the active viewer if it understands it.
+func (a *Agent) sendScanState(r *scanRun) {
+	if !r.live() {
+		return // an ended or ending scan has no pause state; never answer "not paused" for it
+	}
+	paused, ms := r.pauseState()
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if act := a.active; act != nil && act.snd != nil && act.snd.scanState {
+		act.snd.pushJSON(proto.MsgScanState, proto.ScanState{ScanID: r.id, Paused: paused, ElapsedMs: ms})
 	}
 }
 

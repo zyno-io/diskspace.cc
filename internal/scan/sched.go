@@ -156,6 +156,9 @@ func (w *worker) loop() {
 		if !ok {
 			return
 		}
+		if !s.gate() {
+			return // cancelled while paused: drop the job unprocessed
+		}
 		w.process(j)
 		if s.pending.Add(-1) == 0 {
 			s.mu.Lock()

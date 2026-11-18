@@ -16,6 +16,7 @@ import (
 	"github.com/zyno-io/diskspace.cc/internal/app"
 	"github.com/zyno-io/diskspace.cc/internal/browser"
 	"github.com/zyno-io/diskspace.cc/internal/elevate"
+	"github.com/zyno-io/diskspace.cc/internal/update"
 )
 
 // Launcher phases.
@@ -45,8 +46,9 @@ type Snapshot struct {
 	LocalURL    string `json:"localUrl"`
 	Viewer      string `json:"viewer"` // "" | connected | disconnected | superseded
 	Code        string `json:"code"`
-	Scan        string `json:"scan"` // "" | started | done | canceled
+	Scan        string `json:"scan"` // "" | started | paused | done | canceled
 	ScanPath    string `json:"scanPath"`
+	Latest      string `json:"latest"`  // newer stable release than Version ("" = none or unknown)
 	Notice      string `json:"notice"`  // last non-fatal agent error
 	Message     string `json:"message"` // phaseError detail
 	Expanded    bool   `json:"expanded"`
@@ -119,6 +121,15 @@ func (a *App) startup(ctx context.Context) {
 	a.mu.Lock()
 	a.ctx = ctx
 	a.mu.Unlock()
+	go a.checkUpdate(ctx)
+}
+
+// checkUpdate asks the relay for the newest stable release; a failure or a
+// dev build leaves Latest empty.
+func (a *App) checkUpdate(ctx context.Context) {
+	if latest := update.Check(ctx, a.relay, a.version); latest != "" {
+		a.update(func(s *Snapshot) { s.Latest = latest })
+	}
 }
 
 // shutdown runs when the window closes or the app quits: stop the agent

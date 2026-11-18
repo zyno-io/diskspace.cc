@@ -566,6 +566,9 @@ export class MockSession implements Session {
   private gen: Gen | null = null;
   private scanPath = "";
   private t0 = 0;
+  private paused = false;
+  private pausedAt = 0;
+  private pausedTotal = 0;
   private reqId = 0;
   private closed = false;
   readonly info: AgentInfo;
@@ -588,6 +591,7 @@ export class MockSession implements Session {
       autoScan: o.autoScan ?? null,
       volumes: DEMO_VOLUMES,
       scan: null,
+      features: { pause: true },
     };
   }
 
@@ -639,6 +643,8 @@ export class MockSession implements Session {
     this.gen = gen;
     this.scanPath = norm;
     this.t0 = performance.now();
+    this.paused = false;
+    this.pausedTotal = 0;
     ev.scanStarted({ scanId: id, path: norm, rootName, volume: { total: vol.total, free: vol.free, used: vol.used }, opts: { crossMounts: false } });
 
     const duration = (this.o.durationMs ?? 10_000) * Math.min(1.15, Math.max(0.35, scale));
@@ -647,6 +653,10 @@ export class MockSession implements Session {
     let first = true;
     const tick = () => {
       if (this.gen !== gen) return;
+      if (this.paused) {
+        this.scanTimer = window.setTimeout(tick, tickMs);
+        return;
+      }
       const recs: NodeRecord[] = [];
       // vary the pace like a real disk: bursts and slow patches
       const pace = 0.5 + Math.abs(Math.sin((performance.now() - this.t0) / 900)) * 1.1;
@@ -655,7 +665,7 @@ export class MockSession implements Session {
       if (recs.length) ev.nodes({ scanId: id, records: recs, wireBytes: bytes });
       if (gen.done) {
         this.sendProgress(id);
-        const ms = Math.round(performance.now() - this.t0);
+        const ms = this.elapsed();
         window.clearInterval(this.progTimer);
         this.progTimer = 0;
         this.scanTimer = 0;
@@ -673,9 +683,30 @@ export class MockSession implements Session {
 
   private sendProgress(id: number): void {
     const g = this.gen;
-    if (!g || !this.ev || id !== this.scanId) return;
+    if (!g || !this.ev || id !== this.scanId || this.paused) return;
     const last = g.pool.length ? g.pool[g.pool.length - 1] : 0;
-    this.ev.progress({ scanId: id, dirs: g.totals.dirs, files: g.totals.files, alloc: g.totals.alloc, apparent: g.totals.apparent, errors: 0, elapsedMs: Math.round(performance.now() - this.t0), currentPath: g.path(last, this.scanPath) });
+    this.ev.progress({ scanId: id, dirs: g.totals.dirs, files: g.totals.files, alloc: g.totals.alloc, apparent: g.totals.apparent, errors: 0, elapsedMs: this.elapsed(), currentPath: g.path(last, this.scanPath) });
+  }
+
+  /** running time excluding paused time */
+  private elapsed(): number {
+    const now = performance.now();
+    return Math.round(now - this.t0 - this.pausedTotal - (this.paused ? now - this.pausedAt : 0));
+  }
+
+  scanPause(scanId: number, paused: boolean): void {
+    if (scanId !== this.scanId || !this.gen || !this.ev) return;
+    const ev = this.ev;
+    if (paused !== this.paused) {
+      const now = performance.now();
+      if (paused) this.pausedAt = now;
+      else this.pausedTotal += now - this.pausedAt;
+      this.paused = paused;
+    }
+    // the agent answers every request with its current state
+    this.later(60, () => {
+      if (scanId === this.scanId) ev.scanState({ scanId, paused: this.paused, elapsedMs: this.elapsed() });
+    });
   }
 
   private stopScan(): void {
@@ -687,6 +718,7 @@ export class MockSession implements Session {
   scanCancel(scanId: number): void {
     if (scanId !== this.scanId || !this.gen) return;
     this.stopScan();
+    this.paused = false;
     this.gen = null;
     this.later(80, () => this.ev?.scanEnded({ scanId, reason: "canceled" }));
   }

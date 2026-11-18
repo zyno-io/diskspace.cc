@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"sync"
 	"time"
 
 	"github.com/zyno-io/diskspace.cc/internal/cli"
@@ -20,13 +21,13 @@ import (
 // elevateWindows starts an elevated headless agent via UAC and renders its
 // IPC events in this console. It returns done=false to continue unelevated
 // in-process (UAC declined, child died before it was ready).
-func elevateWindows(o *Options, self string, stderr io.Writer, fail func(string) (int, bool)) (int, bool) {
+func elevateWindows(o *Options, version, self string, stderr io.Writer, fail func(string) (int, bool)) (int, bool) {
 	l, tokFile, err := ipc.Listen()
 	if err != nil {
 		return fail("ipc: " + err.Error())
 	}
 	defer l.Close()
-	child, err := elevate.RunAsAdmin(self, AgentArgs(o, os.Getpid(), o.Relay, l.Addr(), tokFile), false)
+	child, err := elevate.RunAsAdmin(self, AgentArgsFor(o, os.Getpid(), o.Relay, l.Addr(), tokFile, "cli"), false)
 	if err != nil {
 		if errors.Is(err, elevate.ErrCancelled) {
 			fmt.Fprintf(stderr, "diskspace: administrator permission was declined; continuing as %s.\n", elevate.CurrentUser())
@@ -85,6 +86,7 @@ func elevateWindows(o *Options, self string, stderr io.Writer, fail func(string)
 	defer signal.Stop(sig)
 
 	ready := false
+	var checked sync.Once
 	shutdown := func() int {
 		_ = conn.Send(ipc.Msg{T: ipc.TShutdown})
 		select {
@@ -100,6 +102,9 @@ func elevateWindows(o *Options, self string, stderr io.Writer, fail func(string)
 		case m := <-msgs:
 			if m.T == ipc.TReady {
 				ready = true
+				if m.URL != "" {
+					checked.Do(func() { go announceUpdate(rend, relayFor(o), version) })
+				}
 			}
 			if ev, ok := ipcEvent(m); ok {
 				rend.Event(ev)

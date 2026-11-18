@@ -77,7 +77,7 @@ describe("ViewerConnection against a simulated agent", () => {
     const hello = await a.open(t.sockets[0].sent[1]);
     expect(hello[0]).toBe(0); // codec 0
     expect(hello[1]).toBe(MSG.CLIENT_HELLO);
-    expect(JSON.parse(new TextDecoder().decode(hello.subarray(2)))).toEqual({ proto: 1, ua: "test-ua", caps: { zstdStream: true } });
+    expect(JSON.parse(new TextDecoder().decode(hello.subarray(2)))).toEqual({ proto: 1, ua: "test-ua", caps: { zstdStream: true, scanState: true } });
   });
 
   it("requires STREAM_INIT first and AGENT_INFO as key confirmation", async () => {
@@ -295,5 +295,44 @@ describe("ViewerConnection pacing", () => {
     await sleep(20);
     expect(kinds(t).filter((k) => k === "nodes").length).toBe(2);
     void before;
+  });
+});
+
+describe("pause extension", () => {
+  it("dispatches SCAN_STATE in order behind SCAN_STARTED (a replayed pause lands after the reset)", async () => {
+    const t = setup();
+    t.conn.connect();
+    await t.start();
+    await until(() => t.states().includes("connected"));
+    t.sockets[0].push(await t.agents[0].json(MSG.SCAN_STARTED, { scanId: 1, path: "/x", rootName: "x", volume: null, opts: {} }));
+    t.sockets[0].push(await t.agents[0].json(MSG.SCAN_STATE, { scanId: 1, paused: true, elapsedMs: 1234 }));
+    await until(() => t.events.some((e) => e.t === "scanState"));
+    const order = t.events.map((e) => e.t).filter((k) => k === "scanStarted" || k === "scanState");
+    expect(order).toEqual(["scanStarted", "scanState"]);
+    expect((t.events.find((e) => e.t === "scanState") as any).v).toEqual({ scanId: 1, paused: true, elapsedMs: 1234 });
+  });
+
+  it("sends SCAN_PAUSE as an idempotent set", async () => {
+    const t = setup();
+    t.conn.connect();
+    await t.start();
+    await until(() => t.states().includes("connected"));
+    const before = t.sockets[0].sent.length;
+    t.conn.handle({ t: "scanPause", scanId: 7, paused: true });
+    await until(() => t.sockets[0].sent.length === before + 1);
+    await t.agents[0].open(t.sockets[0].sent[1]); // CLIENT_HELLO (seq 0)
+    const m = await t.agents[0].open(t.sockets[0].sent[before]);
+    expect(m[1]).toBe(MSG.SCAN_PAUSE);
+    expect(JSON.parse(new TextDecoder().decode(m.subarray(2)))).toEqual({ scanId: 7, paused: true });
+  });
+
+  it("an unknown a2v type is still fatal", async () => {
+    const t = setup();
+    t.conn.connect();
+    await t.start();
+    await until(() => t.states().includes("connected"));
+    t.sockets[0].push(await t.agents[0].json(0x6b));
+    await until(() => t.states().includes("error"));
+    expect(t.sockets[0].closedByClient).toBe(4402);
   });
 });

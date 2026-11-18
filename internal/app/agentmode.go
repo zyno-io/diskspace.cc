@@ -27,7 +27,10 @@ func runAgentMode(o *Options, version string) int {
 	defer conn.Close()
 
 	cfg := sessionConfig(o, version)
-	cfg.Launcher = "app"
+	cfg.Launcher = "app" // the GUI, or (Windows CLI flow) --launcher cli
+	if o.Launcher == "cli" {
+		cfg.Launcher = "cli"
+	}
 	elevated := elevate.IsElevated()
 	if elevated && o.GUIElevated {
 		cfg.Elevation = "gui-admin" // elevated by the desktop app (osascript / UAC)

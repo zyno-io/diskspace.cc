@@ -65,6 +65,10 @@ type Scanner struct {
 	cond      *sync.Cond
 	idle      atomic.Int32
 
+	paused    atomic.Bool
+	pauseMu   sync.Mutex
+	pauseCond *sync.Cond
+
 	out     chan proto.Record
 	curPath atomic.Pointer[string]
 }
@@ -115,6 +119,7 @@ func New(opts Options) (*Scanner, error) {
 	}
 	s := &Scanner{opts: opts}
 	s.cond = sync.NewCond(&s.mu)
+	s.pauseCond = sync.NewCond(&s.pauseMu)
 	rid, err := rootID(root)
 	if err != nil {
 		return nil, err
@@ -235,4 +240,7 @@ func (s *Scanner) cancel() {
 	s.mu.Lock()
 	s.cond.Broadcast()
 	s.mu.Unlock()
+	s.pauseMu.Lock()
+	s.pauseCond.Broadcast()
+	s.pauseMu.Unlock()
 }

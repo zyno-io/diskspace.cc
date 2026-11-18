@@ -65,6 +65,9 @@ type sender struct {
 	rd            *logReader
 	replayPending bool
 	replayUntil   int
+	replayWantEnd bool // the log had ended at attach: REPLAY_DONE follows the end message
+	scanState     bool // the viewer advertised caps.scanState
+	liveAttach    bool // attached by a scan start (not a replay): a cancel jumps straight to SCAN_ENDED
 	endSent       bool
 	lastProgress  time.Time
 }
@@ -219,6 +222,7 @@ func (s *sender) attach(run *scanRun, replay bool) {
 	s.mu.Lock()
 	old := s.rd
 	s.rd, s.endSent, s.progress, s.replayPending = rd, false, nil, false
+	s.liveAttach, s.replayWantEnd = !replay, false
 	// A viewer that never reads and keeps starting scans supersedes its own
 	// not-yet-sent attach messages instead of growing the control queue (the
 	// old log reader is closed below, so the superseded scan's data is never
@@ -233,8 +237,14 @@ func (s *sender) attach(run *scanRun, replay bool) {
 		}
 	} else {
 		msgs = append(msgs, run.startedBody)
+		if paused, elapsed := run.pauseState(); paused && s.scanState {
+			// The paused state is part of this attach: superseded with it.
+			b, _ := proto.EncodeMsg(proto.MsgScanState, proto.ScanState{ScanID: run.id, Paused: true, ElapsedMs: elapsed})
+			msgs = append(msgs, b)
+		}
 		if replay {
-			s.replayPending, s.replayUntil = true, run.log.countNow()
+			s.replayPending = true
+			s.replayUntil, s.replayWantEnd = run.log.snapshot()
 		}
 	}
 	for _, m := range msgs {
@@ -314,7 +324,11 @@ func (s *sender) pick() pick {
 		s.mu.Unlock()
 		return pick{closing: true}
 	}
-	rd, credit, replayPending, replayUntil, endSent := s.rd, s.credit, s.replayPending, s.replayUntil, s.endSent
+	rd, credit, replayPending, replayUntil, wantEnd, endSent := s.rd, s.credit, s.replayPending, s.replayUntil, s.replayWantEnd, s.endSent
+	// A reader is live once any replay of the log is behind it: it attached
+	// before the scan started, or it has caught up with a scan that was still
+	// running when it attached (auto-scan viewers and reconnects).
+	live := s.liveAttach || (!replayPending && !wantEnd)
 	prog := s.progress
 	if credit <= 0 || endSent {
 		s.progress, prog = nil, nil // out of credit (droppable) or scan over
@@ -324,15 +338,19 @@ func (s *sender) pick() pick {
 
 	var p pick
 	if rd != nil {
-		if e := rd.l.endNow(); e != nil && !e.Done && !endSent {
-			// canceled / failed scan: deliver SCAN_ENDED promptly, skip the rest.
+		if e := rd.l.endNow(); e != nil && !e.Done && !endSent && live {
+			// A live viewer stopped (or failed) this scan: end it promptly instead of
+			// queueing SCAN_ENDED behind unsent NODES. A replay delivers every logged
+			// NODES first so a reconnect after Stop still shows the partial tree.
+			if !s.markEndSent(rd) {
+				return s.pick() // a new scan attached meanwhile
+			}
 			rd.skipToEnd()
-			s.mu.Lock()
-			s.endSent = true
-			s.mu.Unlock()
 			return pick{body: e.Body}
 		}
-		if replayPending && rd.pos() >= replayUntil {
+		// REPLAY_DONE follows the replayed NODES and, if the scan had already
+		// ended when the viewer attached, the end message too.
+		if replayPending && rd.pos() >= replayUntil && (!wantEnd || endSent) {
 			s.mu.Lock()
 			s.replayPending = false
 			s.mu.Unlock()
@@ -352,9 +370,9 @@ func (s *sender) pick() pick {
 			}
 			// out of credit: wait for CREDIT (wake)
 		case end != nil && !endSent:
-			s.mu.Lock()
-			s.endSent = true
-			s.mu.Unlock()
+			if !s.markEndSent(rd) {
+				return s.pick() // a new scan attached meanwhile
+			}
 			if len(end.Body) > 0 {
 				return pick{body: end.Body}
 			}
@@ -366,6 +384,19 @@ func (s *sender) pick() pick {
 		return s.takeProgress()
 	}
 	return p
+}
+
+// markEndSent records that rd's end message is going out, unless attach has
+// replaced the reader since pick took its snapshot (the new scan's state must
+// not be overwritten).
+func (s *sender) markEndSent(rd *logReader) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.rd != rd {
+		return false
+	}
+	s.endSent = true
+	return true
 }
 
 func (s *sender) takeProgress() pick {

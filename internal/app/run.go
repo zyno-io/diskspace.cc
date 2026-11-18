@@ -12,6 +12,8 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"strings"
+	"sync"
 	"syscall"
 
 	"github.com/zyno-io/diskspace.cc/internal/cli"
@@ -19,6 +21,7 @@ import (
 	"github.com/zyno-io/diskspace.cc/internal/ipc"
 	"github.com/zyno-io/diskspace.cc/internal/prio"
 	"github.com/zyno-io/diskspace.cc/internal/session"
+	"github.com/zyno-io/diskspace.cc/internal/update"
 )
 
 // Main runs the program and exits with its status.
@@ -104,7 +107,7 @@ func runCLI(o *Options, version string, stdout, stderr io.Writer) int {
 
 	// Elevation, before any network or session activity.
 	if !elevate.IsElevated() && !o.NoElevate {
-		if code, done := maybeElevate(o, self, stderr); done {
+		if code, done := maybeElevate(o, version, self, stderr); done {
 			return code
 		}
 	}
@@ -122,8 +125,13 @@ func runCLI(o *Options, version string, stdout, stderr io.Writer) int {
 // serve runs the in-process agent, rendering events with rend.
 func serve(o *Options, cfg session.Config, rend *cli.Renderer, onReady func(ev session.Event)) int {
 	opened := false
+	var checked sync.Once
 	cfg.Events = func(ev session.Event) {
 		rend.Event(ev)
+		if ev.Kind == session.EvLinkReady && ev.URL != "" {
+			// The relay is reachable: tell the user about a newer release. Never blocks startup.
+			checked.Do(func() { go announceUpdate(rend, cfg.RelayURL, cfg.Version) })
+		}
 		if ev.Kind == session.EvLinkReady && o.Open && !opened && !elevate.IsElevated() {
 			opened = true
 			u := ev.URL
@@ -157,9 +165,20 @@ func serve(o *Options, cfg session.Config, rend *cli.Renderer, onReady func(ev s
 	return 0
 }
 
+// announceUpdate prints one line if the relay knows a newer stable release.
+// Dev builds, an unreachable relay and a short timeout all stay silent.
+func announceUpdate(rend *cli.Renderer, relay, version string) {
+	latest := update.Check(context.Background(), relay, version)
+	if latest == "" {
+		return
+	}
+	rend.Warn(fmt.Sprintf("A newer diskspace is available: v%s (you have v%s). How to update: %s",
+		latest, strings.TrimPrefix(version, "v"), update.InstallURL))
+}
+
 // maybeElevate implements the elevation flow. done=true means the process
 // should exit with code (Unix never returns on success: sudo replaces it).
-func maybeElevate(o *Options, self string, stderr io.Writer) (code int, done bool) {
+func maybeElevate(o *Options, version, self string, stderr io.Writer) (code int, done bool) {
 	want := o.Elevate
 	if !want {
 		if !elevate.HasTTY() {
@@ -183,7 +202,7 @@ func maybeElevate(o *Options, self string, stderr io.Writer) (code int, done boo
 		return 0, false
 	}
 	if runtime.GOOS == "windows" {
-		return elevateWindows(o, self, stderr, fail)
+		return elevateWindows(o, version, self, stderr, fail)
 	}
 	if err := elevate.SudoValidate(); err != nil && !errors.Is(err, elevate.ErrNoTTY) {
 		return fail("could not get administrator access: " + err.Error())
@@ -228,6 +247,10 @@ func ipcEvent(m ipc.Msg) (session.Event, bool) {
 			return session.Event{Kind: session.EvScanDone, Path: m.Path}, true
 		case "canceled":
 			return session.Event{Kind: session.EvScanCanceled, Path: m.Path}, true
+		case "paused":
+			return session.Event{Kind: session.EvScanPaused, Path: m.Path}, true
+		case "resumed":
+			return session.Event{Kind: session.EvScanResumed, Path: m.Path}, true
 		}
 	case ipc.TError:
 		return session.Event{Kind: session.EvError, Message: m.Message}, true
@@ -252,6 +275,10 @@ func eventIPC(ev session.Event, elevated bool, fda string) (ipc.Msg, bool) {
 		return ipc.Msg{T: ipc.TScan, State: "done", Path: ev.Path}, true
 	case session.EvScanCanceled:
 		return ipc.Msg{T: ipc.TScan, State: "canceled", Path: ev.Path}, true
+	case session.EvScanPaused:
+		return ipc.Msg{T: ipc.TScan, State: "paused", Path: ev.Path}, true
+	case session.EvScanResumed:
+		return ipc.Msg{T: ipc.TScan, State: "resumed", Path: ev.Path}, true
 	case session.EvScanError:
 		return ipc.Msg{T: ipc.TError, Message: "scan failed: " + ev.Message}, true
 	case session.EvError:

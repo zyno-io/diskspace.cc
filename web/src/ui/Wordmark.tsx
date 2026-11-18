@@ -15,9 +15,11 @@ export interface WordmarkProps {
   label?: string;
   /** shrink the font so the mark, stretched to this wdth, fits its parent */
   fit?: number;
+  /** freeze the current width (a paused scan) */
+  hold?: boolean;
 }
 
-export function Wordmark({ stretch, size, as = "div", href, label, fit }: WordmarkProps) {
+export function Wordmark({ stretch, size, as = "div", href, label, fit, hold }: WordmarkProps) {
   const ref = useRef<HTMLElement>(null);
   useEffect(() => {
     const el = ref.current;
@@ -40,9 +42,10 @@ export function Wordmark({ stretch, size, as = "div", href, label, fit }: Wordma
   }, [fit]);
   useEffect(() => {
     const el = ref.current;
-    if (!el || !stretch) return;
+    if (!el || !stretch || hold) return;
     const reduced = prefersReducedMotion();
-    let cur = stretch() ?? 100;
+    const shown = parseFloat(el.style.fontStretch);
+    let cur = Number.isFinite(shown) ? shown : (stretch() ?? 100);
     let raf = 0;
     let poll: ReturnType<typeof setTimeout> | undefined;
     let last = -1;
@@ -79,7 +82,7 @@ export function Wordmark({ stretch, size, as = "div", href, label, fit }: Wordma
       cancelAnimationFrame(raf);
       clearTimeout(poll);
     };
-  }, [stretch]);
+  }, [stretch, hold]);
   const cls = `wm wm-${size}`;
   const inner = (
     <>

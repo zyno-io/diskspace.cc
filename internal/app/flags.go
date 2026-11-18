@@ -44,6 +44,7 @@ type Options struct {
 	IPCAddr     string // agent subcommand
 	IPCToken    string // agent subcommand
 	GUIElevated bool   // agent: the desktop app elevated this process
+	Launcher    string // agent: cli | app (who started it); default app
 	AgentMode   bool
 	idleSet     bool
 }
@@ -72,6 +73,7 @@ func newFlagSet(o *Options, defaultRelay string, out io.Writer) *flag.FlagSet {
 	fs.BoolVar(&o.Quiet, "quiet", false, "print only the link")
 	fs.StringVar(&o.IPCAddr, "ipc", "", "(agent) IPC address")
 	fs.StringVar(&o.IPCToken, "ipc-token-file", "", "(agent) IPC token file")
+	fs.StringVar(&o.Launcher, "launcher", "", "(agent) cli or app: where the user sees the code; default app")
 	fs.BoolVar(&o.GUIElevated, "gui-elevated", false, "(agent) elevated by the desktop app")
 	fs.Usage = func() {
 		fmt.Fprintf(out, "Usage: diskspace [flags] [path]\n\nShows what is using your disk space in a browser, end-to-end encrypted.\n\nFlags:\n")
@@ -234,6 +236,15 @@ func ElevatedArgs(o *Options, parentPID int, relay string) []string {
 
 // AgentArgs is ElevatedArgs prefixed for the headless Windows child.
 func AgentArgs(o *Options, parentPID int, relay, ipcAddr, tokenFile string) []string {
-	return append([]string{"agent", "--ipc", ipcAddr, "--ipc-token-file", tokenFile},
-		ElevatedArgs(o, parentPID, relay)...)
+	return AgentArgsFor(o, parentPID, relay, ipcAddr, tokenFile, "")
+}
+
+// AgentArgsFor is AgentArgs that also says who launched the agent ("cli" or
+// "app"; empty leaves the agent default, app).
+func AgentArgsFor(o *Options, parentPID int, relay, ipcAddr, tokenFile, launcher string) []string {
+	pre := []string{"agent", "--ipc", ipcAddr, "--ipc-token-file", tokenFile}
+	if launcher != "" {
+		pre = append(pre, "--launcher", launcher)
+	}
+	return append(pre, ElevatedArgs(o, parentPID, relay)...)
 }

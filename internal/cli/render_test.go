@@ -64,3 +64,19 @@ func TestFormat(t *testing.T) {
 		t.Fatal(FormatCount(1234567), FormatBytes(1500))
 	}
 }
+
+func TestPauseRendering(t *testing.T) {
+	var out bytes.Buffer
+	r := New(Options{Out: &out, Err: &out, NoColor: true})
+	r.Event(session.Event{Kind: session.EvScanStarted, Path: "/x"})
+	r.Event(session.Event{Kind: session.EvScanPaused, Path: "/x", Totals: &proto.ScanTotals{Files: 1_200_000}})
+	r.Event(session.Event{Kind: session.EvScanResumed, Path: "/x"})
+	r.Close()
+	s := out.String()
+	if !strings.Contains(s, "Paused · /x · 1.2M files (resume in the browser)") {
+		t.Errorf("missing paused line:\n%s", s)
+	}
+	if strings.Count(s, "Scanning /x") != 2 {
+		t.Errorf("want a Scanning line before the pause and after the resume:\n%s", s)
+	}
+}

@@ -498,6 +498,25 @@ html.lx-web .lx {
   font-size: 13.5px;
 }
 
+.lx-update {
+  margin: 0;
+  color: var(--mist);
+  font-size: 13.5px;
+}
+.lx-linkbtn {
+  border: 0;
+  background: none;
+  padding: 0;
+  color: var(--sodium);
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+.lx-linkbtn:hover {
+  color: #f7c55f;
+}
+
 .lx-fda {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;

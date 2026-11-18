@@ -22,6 +22,7 @@ const (
 	MsgScanEnded    = 0x14
 	MsgDirFiles     = 0x15
 	MsgReplayDone   = 0x16
+	MsgScanState    = 0x17 // only sent to viewers that advertised caps.scanState
 	MsgBye          = 0x7e
 	MsgError        = 0x7f
 	// viewer -> agent
@@ -33,6 +34,7 @@ const (
 	MsgDirFilesReq = 0x86
 	MsgCredit      = 0x87
 	MsgPing        = 0x88
+	MsgScanPause   = 0x89 // only sent when AGENT_INFO.features.pause
 )
 
 // Codec bytes at the start of every plaintext frame.
@@ -68,8 +70,15 @@ type Cwd struct {
 }
 
 type ScanRef struct {
-	ID    uint64 `json:"id"`
-	State string `json:"state"` // running | done | canceled | error
+	ID     uint64 `json:"id"`
+	State  string `json:"state"`            // running | done | canceled | error
+	Paused bool   `json:"paused,omitempty"` // only for viewers that advertised caps.scanState
+}
+
+// Features lists the optional protocol extensions an agent supports. A viewer
+// sends the matching v2a message only if the feature is advertised.
+type Features struct {
+	Pause bool `json:"pause,omitempty"`
 }
 
 // ProtoVersion is the application protocol version. Agent and viewer must
@@ -97,6 +106,7 @@ type AgentInfo struct {
 	AutoScan     *string  `json:"autoScan"`
 	Volumes      []Volume `json:"volumes"`
 	Scan         *ScanRef `json:"scan"`
+	Features     Features `json:"features"`
 }
 
 // MarshalJSON guarantees "volumes" is an array, never null.
@@ -158,6 +168,14 @@ type ScanDone struct {
 	Ms               int64      `json:"ms"`
 }
 
+// ScanState is the SCAN_STATE payload (a2v 0x17): the scan's pause state and
+// its elapsed time excluding paused time.
+type ScanState struct {
+	ScanID    uint64 `json:"scanId"`
+	Paused    bool   `json:"paused"`
+	ElapsedMs int64  `json:"elapsedMs"`
+}
+
 type ScanEnded struct {
 	ScanID  uint64 `json:"scanId"`
 	Reason  string `json:"reason"` // canceled | error
@@ -194,6 +212,9 @@ type Error struct {
 
 type ClientCaps struct {
 	ZstdStream bool `json:"zstdStream"`
+	// ScanState: the viewer understands SCAN_STATE (0x17). The agent sends no
+	// new a2v message type to a viewer that did not advertise it.
+	ScanState bool `json:"scanState,omitempty"`
 }
 
 type ClientHello struct {
@@ -211,6 +232,12 @@ type ScanStart struct {
 
 type ScanCancel struct {
 	ScanID uint64 `json:"scanId"`
+}
+
+// ScanPause is the SCAN_PAUSE payload (v2a 0x89): an idempotent set, not a toggle.
+type ScanPause struct {
+	ScanID uint64 `json:"scanId"`
+	Paused bool   `json:"paused"`
 }
 
 type Browse struct {
