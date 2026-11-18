@@ -254,6 +254,13 @@ func pin(t *Target) (*pinned, error) {
 	if err != nil {
 		return nil, rmErr(CodeFailed, t.Path, err)
 	}
+	ftype := uint32(1) // file
+	if p.attrs&attrReparse != 0 {
+		ftype = 2 // reparse point (symlink)
+	}
+	if t.ftype != 0 && ftype != t.ftype {
+		return nil, rmErr(CodeChanged, t.Path, nil)
+	}
 	if id.Dev != pid.Dev || t.Dir && p.attrs&attrReparse != 0 {
 		return nil, rmErr(CodeMountPoint, t.Path, nil)
 	}
@@ -274,7 +281,7 @@ func pin(t *Target) (*pinned, error) {
 		if err := windows.GetFileInformationByHandleEx(h, classStandardInfo, (*byte)(unsafe.Pointer(&si)), uint32(unsafe.Sizeof(si))); err != nil {
 			return nil, rmErr(CodeFailed, t.Path, err)
 		}
-		t.ID = id
+		t.ID, t.ftype = id, ftype
 		t.Alloc, t.Apparent, t.Links = uint64(si.AllocationSize), uint64(si.EndOfFile), uint64(si.NumberOfLinks)
 	}
 	ok = true

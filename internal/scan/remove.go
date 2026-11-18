@@ -143,6 +143,7 @@ type Target struct {
 	Links    uint64   // files: link count as resolved
 
 	bounds Bounds
+	ftype  uint32 // files: entry type as resolved (an inode number can be reused by a new entry)
 }
 
 // ResolveDir pins the directory loc names, which must still be the one with

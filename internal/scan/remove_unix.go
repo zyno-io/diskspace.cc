@@ -128,7 +128,8 @@ func pin(t *Target) (*pinned, error) {
 		}
 	}
 	id := statIdentity(&p.st)
-	if !t.ID.IsZero() && id != t.ID {
+	ftype := uint32(p.st.Mode) & unix.S_IFMT
+	if !t.ID.IsZero() && id != t.ID || t.ftype != 0 && ftype != t.ftype {
 		return nil, rmErr(CodeChanged, t.Path, nil)
 	}
 	if id.Dev != p.pdev || isMountRoot(pfd, t.Name) {
@@ -146,7 +147,7 @@ func pin(t *Target) (*pinned, error) {
 			return nil, rmErr(CodeProtected, t.Path, nil)
 		}
 	} else {
-		t.ID = id
+		t.ID, t.ftype = id, ftype
 		t.Alloc, t.Apparent, t.Links = uint64(p.st.Blocks)*512, uint64(p.st.Size), uint64(p.st.Nlink)
 	}
 	ok = true
