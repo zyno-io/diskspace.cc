@@ -9,7 +9,7 @@ import { MAX_V2A_BODY } from "../protocol/messages";
 import type { AgentInfo, ByeMsg, ConnState, Deleted, DeleteItem, DeleteMode, DeleteStatus, NodeBatch, Progress, ScanDone, ScanEnded, ScanStarted, ScanState, Session } from "../protocol/types";
 import { defaultUnits, type Units } from "../store/format";
 import { KIND_NONE, TreeStore } from "../store/tree";
-import { DEFAULT_MAX_ITEMS, featureReason, itemKey, nodeReason, queuedAncestor, resolveKey, wireItem } from "./deletion";
+import { DEFAULT_MAX_ITEMS, MAX_FOLDERS, featureReason, itemKey, nodeReason, queuedAncestor, resolveKey, wireItem } from "./deletion";
 import { IngestScheduler, trackInput, type IngestEnv } from "./ingest";
 
 export type Phase = "connecting" | "picker" | "scanning" | "done" | "stopped" | "superseded" | "closed" | "error";
@@ -177,6 +177,11 @@ export class Controller {
         else this.conn.value = { s: "closed", reason: m.reason };
       },
       error: (m) => {
+        // a scan asked for while a deletion runs is refused; the session stays up
+        if (m.code === "busy") {
+          this.flash("Wait for the deletion to finish before scanning");
+          return;
+        }
         this.conn.value = { s: "error", kind: "protocol", message: m.message || m.code };
       },
     });
@@ -198,6 +203,11 @@ export class Controller {
   }
 
   scanPath(path: string): void {
+    const d = this.info.peek()?.deleting;
+    if (d && !TERMINAL.has(d.state)) {
+      this.flash("Wait for the deletion to finish before scanning");
+      return;
+    }
     this.picking.value = false;
     this.session.scanStart(path, { crossMounts: false });
   }
@@ -387,14 +397,18 @@ export class Controller {
     const items: DeleteItem[] = [];
     const names: string[] = [];
     let bytes = 0;
+    const folders = new Set<number>();
     for (const n of nodes) {
       const it = wireItem(st, n);
       if (!it || st.isRemoved(n)) continue;
+      folders.add(st.parent[n]);
       items.push(it);
       names.push(st.names[n]);
       bytes += st.size(n);
     }
     if (items.length === 0) return "Nothing to delete";
+    // the host's prompt names the folder of every item, so it refuses wider spreads
+    if (folders.size > MAX_FOLDERS) return `These items are in ${folders.size} folders. Send items from at most ${MAX_FOLDERS} folders at a time.`;
     const req = { reqId: this.nextReqId++, scanId: st.scanId, mode, items };
     if (te.encode(JSON.stringify(req)).length + 1 > MAX_V2A_BODY) return "Too many items to send at once. Remove some and try again.";
     this.request.value = { reqId: req.reqId, mode, names, bytes, count: items.length, job: null, status: null, cancelWanted: false };

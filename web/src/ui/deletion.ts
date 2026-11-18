@@ -12,6 +12,8 @@ import { KIND_BUCKET, KIND_DIR, KIND_FILE, KIND_SYNTH, type TreeStore } from "..
 export const LARGE_BYTES = 100e9;
 export const LARGE_FILES = 100_000;
 export const DEFAULT_MAX_ITEMS = 500;
+/** the agent refuses a request whose items lie in more folders than this ("too_spread") */
+export const MAX_FOLDERS = 20;
 
 // ---- keys ------------------------------------------------------------------------
 
@@ -191,6 +193,7 @@ export function itemCodeText(code: string | undefined, message: string | undefin
     case "permission":
       return "Permission denied";
     case "mount":
+    case "mount_point":
       return "Mount point skipped";
     case "protected":
       return "Protected folder";
@@ -204,6 +207,14 @@ export function itemCodeText(code: string | undefined, message: string | undefin
     case "busy":
     case "in_use":
       return "In use";
+    case "not_scanned":
+      return "Not in the scan. Scan again.";
+    case "invalid_name":
+      return "Its name can't be deleted safely from here";
+    case "trash_unavailable":
+      return "Couldn't move it to the Trash";
+    case "failed":
+      return message || "Couldn't delete it";
     default:
       return message || code || "Not deleted";
   }
@@ -228,6 +239,12 @@ export function requestCodeText(code: string | undefined, message: string | unde
       return "Finish or stop the scan first.";
     case "busy":
       return "Another deletion is running.";
+    case "too_spread":
+      return `These items are in more than ${MAX_FOLDERS} different folders. Send items from fewer folders at a time.`;
+    case "nothing_deletable":
+      return "None of these items can be deleted. Nothing was deleted.";
+    case "invalid":
+      return "The request didn't match the current scan. Scan again, then try again.";
     case "trash_unavailable":
       return `The ${trash} isn't available here. You can delete permanently instead.`;
     case "disconnected":
