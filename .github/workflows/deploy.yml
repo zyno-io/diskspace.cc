@@ -91,22 +91,24 @@ jobs:
         run: |
           set -euo pipefail
           want="${RELEASE_TAG#v}"
-          got=
-          # The sidecar answers 202 before the pull and restart finish.
+          got='' code=''
+          ok=0
+          # The sidecar answers 202 before the pull and restart finish, and a
+          # redeploy of the running version matches /version before the swap.
+          # So wait out the restart, then require several healthy checks in
+          # a row.
+          sleep 20
           for _ in $(seq 1 60); do
-            got=$(curl --fail --silent --show-error --proto '=https' --tlsv1.2 \
-              --connect-timeout 10 --max-time 20 https://diskspace.cc/version 2>/dev/null | tr -d '[:space:]' || true)
-            if [ "$got" = "$want" ]; then break; fi
+            got=$(curl --fail --silent --proto '=https' --tlsv1.2 --connect-timeout 10 --max-time 20 \
+              https://diskspace.cc/version 2>/dev/null | tr -d '[:space:]' || true)
+            code=$(curl --silent --output /dev/null --write-out '%{http_code}' --proto '=https' --tlsv1.2 \
+              --connect-timeout 10 --max-time 20 https://diskspace.cc/healthz || true)
+            if [ "$got" = "$want" ] && [ "$code" = 200 ]; then ok=$((ok + 1)); else ok=0; fi
+            if [ "$ok" -ge 3 ]; then break; fi
             sleep 10
           done
-          if [ "$got" != "$want" ]; then
-            echo "::error::https://diskspace.cc/version reports '${got}', expected '${want}'"
-            exit 1
-          fi
-          code=$(curl --silent --output /dev/null --write-out '%{http_code}' --proto '=https' --tlsv1.2 \
-            --connect-timeout 10 --max-time 20 https://diskspace.cc/healthz || true)
-          if [ "$code" != 200 ]; then
-            echo "::error::https://diskspace.cc/healthz returned HTTP ${code}"
+          if [ "$ok" -lt 3 ]; then
+            echo "::error::https://diskspace.cc/version reports '${got}' (expected '${want}'), /healthz HTTP ${code}"
             exit 1
           fi
           echo "Production is serving ${want}"
