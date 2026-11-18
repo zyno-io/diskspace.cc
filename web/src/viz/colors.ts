@@ -9,6 +9,9 @@ export const CONTOUR = "#2B5A58";
 export const FOAM = "#E9F2EE";
 export const MIST = "#9DB9B3";
 export const SODIUM = "#F3B73F";
+/** --petrol-deep and --rose (deletion marks) */
+export const PETROL_DEEP = "#081E23";
+export const ROSE = "#D99AAE";
 
 /** top-level branch hues, cycled in this order */
 export const HUES = ["#D9A441", "#9DBA6E", "#74BFCF", "#4FA98F", "#DCD5C3", "#D99AAE", "#6F93B8", "#C48D5C"];

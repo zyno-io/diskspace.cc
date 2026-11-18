@@ -843,7 +843,7 @@ export class MockSession implements Session {
       }
       const it = items[i];
       const path = cur(i);
-      if (/\/Library\/Containers\//.test(path)) {
+      if (/\/Library\/Containers(\/|$)/.test(path)) {
         results.push({ i, ok: false, code: "denied", freedAlloc: 0, files: 0, dirs: 0 });
       } else if ("dir" in it) {
         const id = it.dir;

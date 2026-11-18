@@ -54,3 +54,8 @@ export const Close = () => (
     <path d="m4 4 8 8M12 4l-8 8" />
   </svg>
 );
+export const Trash = () => (
+  <svg {...base}>
+    <path d="M2.8 4.3h10.4M6.3 4.3V2.9c0-.4.3-.7.7-.7h2c.4 0 .7.3.7.7v1.4M4.2 4.3l.6 8.6c0 .5.5.9 1 .9h4.4c.5 0 1-.4 1-.9l.6-8.6M6.7 7v4.2M9.3 7v4.2" />
+  </svg>
+);

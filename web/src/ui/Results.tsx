@@ -10,7 +10,9 @@ import { formatBytes, formatCompact, formatCount, formatDuration, plural } from 
 import { KIND_DIR } from "../store/tree";
 import { SurveyGrid } from "../viz/survey";
 import { TreemapView } from "../viz/treemap";
+import { ContextMenu } from "./ContextMenu";
 import type { Controller } from "./controller";
+import { DeleteDialog, DeleteQueue, QueuePill } from "./DeleteQueue";
 import { HostChip } from "./HostChip";
 import { Back, Pause, Play } from "./icons";
 import { prefersReducedMotion } from "./motion";
@@ -62,6 +64,11 @@ export function Results({ ctl, embedded }: { ctl: Controller; embedded: boolean 
         zoomTo(ctl, n);
         ctl.selected.value = n;
       },
+      onContext: (n, x, y) => {
+        ctl.selected.value = n;
+        ctl.menu.value = { node: n, x, y, keyboard: false };
+      },
+      marked: () => ctl.queueSet.peek(),
     });
     const syncSurvey = () => survey.setRunning(ctl.phase.peek() === "scanning" && !ctl.paused.peek() && ctl.ingest.backlog === 0);
     syncSurvey();
@@ -83,6 +90,10 @@ export function Results({ ctl, embedded }: { ctl: Controller; embedded: boolean 
       effect(() => view.setSelected(ctl.selected.value)),
       effect(() => view.setHovered(ctl.hovered.value)),
       effect(() => {
+        ctl.queue.value;
+        view.redraw();
+      }),
+      effect(() => {
         ctl.units.value;
         view.refreshLabels();
       }),
@@ -91,10 +102,15 @@ export function Results({ ctl, embedded }: { ctl: Controller; embedded: boolean 
       if (pushed > 0) pushed--;
       const s = e.state as ZoomState | null;
       const st = ctl.store;
-      ctl.zoom.value = s && s.scan === st.scanId && s.dz < st.n ? s.dz : st.root;
+      // a folder deleted since: its nearest surviving parent
+      ctl.zoom.value = s && s.scan === st.scanId && s.dz < st.n ? st.survivor(s.dz) : st.root;
     };
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !(e.target instanceof HTMLInputElement)) zoomOut(ctl);
+      if (e.key !== "Escape" || e.target instanceof HTMLInputElement || e.defaultPrevented) return;
+      if (ctl.request.peek()) return; // the dialog handles its own Escape
+      if (ctl.menu.peek()) ctl.menu.value = null;
+      else if (ctl.drawerOpen.peek()) ctl.drawerOpen.value = false;
+      else zoomOut(ctl);
     };
     window.addEventListener("popstate", onPop);
     window.addEventListener("keydown", onKey);
@@ -118,7 +134,15 @@ export function Results({ ctl, embedded }: { ctl: Controller; embedded: boolean 
         {/* absolute over the map on desktop; in flow between map and list on mobile */}
         <Meter ctl={ctl} />
         <TreeList ctl={ctl} />
+        <DeleteQueue ctl={ctl} />
       </div>
+      <ContextMenu ctl={ctl} />
+      <DeleteDialog ctl={ctl} />
+      {ctl.notice.value && (
+        <div class="notice" role="status">
+          {ctl.notice.value}
+        </div>
+      )}
     </div>
   );
 }
@@ -207,6 +231,7 @@ function TopBar({ ctl, embedded }: { ctl: Controller; embedded: boolean }) {
           </button>
         </span>
       </div>
+      <QueuePill ctl={ctl} />
       <div class="actions">
         {phase === "scanning" ? (
           ctl.stopping.value ? (

@@ -313,11 +313,18 @@ export class Controller {
     if (!q.includes(n)) return;
     this.queue.value = q.filter((x) => x !== n);
     this.saveQueue();
+    this.closeDrawerIfEmpty();
   }
 
   clearQueue(): void {
     this.queue.value = [];
     this.saveQueue();
+    this.closeDrawerIfEmpty();
+  }
+
+  /** an empty drawer has nothing to show once no request is pending (its pill is gone too) */
+  private closeDrawerIfEmpty(): void {
+    if (this.queue.peek().length === 0 && !this.request.peek()) this.drawerOpen.value = false;
   }
 
   /** why a delete request can't be sent now (scan state, other jobs), or null */
@@ -392,6 +399,7 @@ export class Controller {
     const r = this.request.peek();
     if (r && !this.requestFinished(r)) return;
     this.request.value = null;
+    this.closeDrawerIfEmpty();
   }
 
   private onDeleteStatus(m: DeleteStatus): void {
@@ -435,6 +443,7 @@ export class Controller {
       if (live.length !== q.length) {
         this.queue.value = live;
         this.saveQueue();
+        this.closeDrawerIfEmpty();
       }
     });
     this.changed(true);

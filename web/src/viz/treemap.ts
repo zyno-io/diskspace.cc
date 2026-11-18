@@ -7,7 +7,8 @@
 import { DIR_FLAG } from "../protocol/types";
 import { formatBytes, formatCount, formatPercent, plural, type Units } from "../store/format";
 import { KIND_BUCKET, KIND_DIR, KIND_FILE, KIND_SYNTH, type TreeStore } from "../store/tree";
-import { hatchPatterns, PALETTE, SODIUM, FOAM, MAX_DEPTH } from "./colors";
+import { longPress } from "../ui/longpress";
+import { hatchPatterns, PALETTE, SODIUM, FOAM, MAX_DEPTH, PETROL_DEEP, ROSE } from "./colors";
 import { computeLayout, DEFAULT_LAYOUT, IT_DIR, IT_LEAF, IT_REST, Layout, type LayoutOptions } from "./layout";
 
 const TWEEN_MS = 220;
@@ -31,6 +32,8 @@ function initFonts(): void {
 }
 const DASH = [3, 3];
 const NO_DASH: number[] = [];
+/** queued-for-deletion outline */
+const MARK_DASH = [5, 3];
 
 const easeOut = (t: number) => 1 - (1 - t) * (1 - t) * (1 - t);
 const easeInOut = (t: number) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
@@ -46,6 +49,10 @@ export interface TreemapOptions {
   backlog?(): number;
   /** the scan is paused: no layout tweens, tooltips say so */
   paused?(): boolean;
+  /** right-click or long-press on a parcel (client coordinates) */
+  onContext?(node: number, x: number, y: number): void;
+  /** nodes queued for deletion: veiled with a dashed outline */
+  marked?(): ReadonlySet<number>;
   layout?: Partial<LayoutOptions>;
 }
 
@@ -125,6 +132,7 @@ export class TreemapView {
   selected = -1;
   private hoverItem = -1;
   private disposed = false;
+  private offPress: (() => void) | null = null;
 
   constructor(host: HTMLElement, readonly store: TreeStore, readonly o: TreemapOptions) {
     initFonts();
@@ -153,6 +161,10 @@ export class TreemapView {
       this.overlay.addEventListener("pointermove", this.onMove);
       this.overlay.addEventListener("pointerleave", this.onLeave);
       this.overlay.addEventListener("click", this.onClick);
+      if (o.onContext) {
+        this.overlay.addEventListener("contextmenu", this.onContextMenu);
+        this.offPress = longPress(this.overlay, (x, y) => this.contextAt(x, y));
+      }
     } else {
       this.overlay.style.pointerEvents = "none";
     }
@@ -173,6 +185,7 @@ export class TreemapView {
 
   destroy(): void {
     this.disposed = true;
+    this.offPress?.();
     this.ro.disconnect();
     cancelAnimationFrame(this.raf);
     clearTimeout(this.layoutTimer);
@@ -241,6 +254,11 @@ export class TreemapView {
     if (this.hovered === node) return;
     this.hovered = node;
     this.drawOverlay();
+  }
+
+  /** marks changed: repaint without relayout */
+  redraw(): void {
+    this.requestDraw();
   }
 
   /** units changed: relabel without moving anything */
@@ -674,7 +692,37 @@ export class TreemapView {
       if (L.type[i] === IT_DIR) ctx.fillText(sub, x + s.labelW[i] + 2, y + 11.5);
       else ctx.fillText(sub, x + 5, y + 28);
     }
+    this.drawMarks(s, t, alpha);
     ctx.globalAlpha = 1;
+  }
+
+  /** second pass: veil + dashed rose outline over parcels queued for deletion */
+  private drawMarks(s: Scene, t: number, alpha: number): void {
+    const marks = this.o.marked?.();
+    if (!marks || marks.size === 0) return;
+    const ctx = this.ctx;
+    const L = s.L;
+    const tweening = t < 1;
+    ctx.setLineDash(MARK_DASH);
+    ctx.lineWidth = 1.5;
+    ctx.strokeStyle = ROSE;
+    ctx.fillStyle = PETROL_DEEP;
+    for (let i = 0; i < L.count; i++) {
+      if (L.type[i] === IT_REST || !marks.has(L.node[i])) continue;
+      let x = L.x[i], y = L.y[i], w = L.w[i], h = L.h[i];
+      if (tweening) {
+        x = s.fx[i] + (x - s.fx[i]) * t;
+        y = s.fy[i] + (y - s.fy[i]) * t;
+        w = s.fw[i] + (w - s.fw[i]) * t;
+        h = s.fh[i] + (h - s.fh[i]) * t;
+      }
+      if (w < 1 || h < 1) continue;
+      ctx.globalAlpha = alpha * 0.62;
+      ctx.fillRect(x, y, w, h);
+      ctx.globalAlpha = alpha;
+      ctx.strokeRect(x + 0.75, y + 0.75, Math.max(0, w - 1.5), Math.max(0, h - 1.5));
+    }
+    ctx.setLineDash(NO_DASH);
   }
 
   private drawOverlay(): void {
@@ -734,6 +782,20 @@ export class TreemapView {
     this.placeTip(0, 0, false);
   };
 
+  private onContextMenu = (e: MouseEvent): void => {
+    e.preventDefault();
+    this.contextAt(e.clientX, e.clientY);
+  };
+
+  private contextAt(cx: number, cy: number): void {
+    if (this.zoom) return;
+    const r = this.overlay.getBoundingClientRect();
+    const it = this.cur.L.hit(cx - r.left, cy - r.top);
+    if (it < 0 || this.cur.L.type[it] === IT_REST) return;
+    this.placeTip(0, 0, false);
+    this.o.onContext?.(this.cur.L.node[it], cx, cy);
+  }
+
   private onClick = (e: MouseEvent): void => {
     if (this.zoom) return;
     const [x, y] = this.pos(e);
@@ -786,6 +848,8 @@ export class TreemapView {
     } else if (kind === KIND_FILE) {
       parts.push(st.fullPath(parent));
     }
+    if (st.isStale(node)) parts.push("Partly deleted · scan again");
+    if (this.o.marked?.().has(node)) parts.push("In the deletion queue");
     this.tipMeta.textContent = parts.join("\n");
   }
 
