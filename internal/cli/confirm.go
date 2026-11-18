@@ -315,9 +315,6 @@ func RenderFolders(req session.ConfirmRequest) string {
 	for _, f := range req.Folders {
 		fmt.Fprintf(&b, "  %10s  %s  (%s)\n", FormatBytes(f.Alloc), f.Path, plural(uint64(f.Count), "item", "items"))
 	}
-	if req.MoreFolders > 0 {
-		fmt.Fprintf(&b, "  … and %d more folders\n", req.MoreFolders)
-	}
 	return b.String()
 }
 

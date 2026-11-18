@@ -23,7 +23,7 @@ import (
 // Nothing here is reachable from the page (no bound method approves).
 
 // maxDialogItems is how many paths a dialog lists (the largest).
-const maxDialogItems = 15
+const maxDialogItems = 10
 
 // dialogFunc shows a native message dialog and returns the chosen button.
 type dialogFunc func(ctx context.Context, o wruntime.MessageDialogOptions) (string, error)
@@ -88,9 +88,6 @@ func confirmText(req session.ConfirmRequest) string {
 		fmt.Fprintf(&b, "… and %d more. All %d items are in these folders:\n", more, req.Count)
 		for _, f := range req.Folders {
 			fmt.Fprintf(&b, "%s  (%d, %s)\n", f.Path, f.Count, cli.FormatBytes(f.Alloc))
-		}
-		if req.MoreFolders > 0 {
-			fmt.Fprintf(&b, "… and %d more folders\n", req.MoreFolders)
 		}
 	}
 	at := ""

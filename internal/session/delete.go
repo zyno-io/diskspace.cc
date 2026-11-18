@@ -36,7 +36,9 @@ var (
 )
 
 const (
-	maxConfirmFolders = 40  // parent folders listed in a prompt
+	// MaxConfirmFolders: a request whose items lie in more folders than this
+	// is refused ("too_spread"), so a prompt can always name every folder.
+	MaxConfirmFolders = 20
 	maxShownPath      = 512 // bytes of one path in a prompt
 	// LargeBytes and LargeFiles: a permanent deletion above either needs a
 	// second confirmation on the host.
@@ -67,21 +69,20 @@ type ConfirmRequest struct {
 	Mode  string        `json:"mode"`  // trash | permanent
 	Items []ConfirmItem `json:"items"` // every item, largest first
 	More  int           `json:"more"`  // items left out of Items (to fit an IPC message)
-	// Folders holds the parent folders of all items, largest first (at most
-	// 40; MoreFolders counts the rest).
-	Folders     []ConfirmFolder `json:"folders"`
-	MoreFolders int             `json:"moreFolders"`
-	Count       int             `json:"count"` // items that will be deleted
-	Skipped     int             `json:"skipped"`
-	Alloc       uint64          `json:"alloc"`
-	Files       uint64          `json:"files"`
-	Dirs        uint64          `json:"dirs"`
-	AtLeast     bool            `json:"atLeast"` // measuring stopped early: totals are lower bounds
-	Large       bool            `json:"large"`   // permanent and large: ask a second time
-	Warnings    []string        `json:"warnings,omitempty"`
-	Code        string          `json:"code"`     // the requesting viewer's verification code
-	ViaRelay    bool            `json:"viaRelay"` // the viewer is connected through the relay
-	Trash       string          `json:"trash"`    // "Trash" or "Recycle Bin"
+	// Folders holds the parent folder of every item, largest first (at
+	// most MaxConfirmFolders: a request spread wider is refused).
+	Folders  []ConfirmFolder `json:"folders"`
+	Count    int             `json:"count"` // items that will be deleted
+	Skipped  int             `json:"skipped"`
+	Alloc    uint64          `json:"alloc"`
+	Files    uint64          `json:"files"`
+	Dirs     uint64          `json:"dirs"`
+	AtLeast  bool            `json:"atLeast"` // measuring stopped early: totals are lower bounds
+	Large    bool            `json:"large"`   // permanent and large: ask a second time
+	Warnings []string        `json:"warnings,omitempty"`
+	Code     string          `json:"code"`     // the requesting viewer's verification code
+	ViaRelay bool            `json:"viaRelay"` // the viewer is connected through the relay
+	Trash    string          `json:"trash"`    // "Trash" or "Recycle Bin"
 }
 
 // ConfirmFolder is a folder that holds Count of the items.
@@ -448,6 +449,12 @@ func (a *Agent) runJob(j *delJob) {
 		a.finishJob(j, proto.DelFailed, "nothing_deletable", "None of the items can be deleted.")
 		return
 	}
+	if len(req.Folders) > MaxConfirmFolders {
+		// a prompt must be able to name the folder of every item
+		a.finishJob(j, proto.DelFailed, "too_spread",
+			fmt.Sprintf("These items are in %d different folders; send items from at most %d folders at a time.", len(req.Folders), MaxConfirmFolders))
+		return
+	}
 
 	j.setState(proto.DelAwaiting)
 	cctx, ccancel := context.WithTimeout(j.pctx, confirmTimeout)
@@ -680,13 +687,6 @@ func (a *Agent) confirmRequest(j *delJob) ConfirmRequest {
 	}
 	sort.SliceStable(req.Items, func(a, b int) bool { return req.Items[a].Alloc > req.Items[b].Alloc })
 	sort.SliceStable(folders, func(a, b int) bool { return folders[a].Alloc > folders[b].Alloc })
-	if len(folders) > maxConfirmFolders {
-		req.MoreFolders = len(folders) - maxConfirmFolders
-		folders = folders[:maxConfirmFolders]
-		if j.mode == scan.ModePermanent {
-			req.Large = true // too spread out to show: ask twice
-		}
-	}
 	req.Folders = folders
 	if j.mode == scan.ModePermanent {
 		req.Large = req.Large || req.Alloc > LargeBytes || req.Files > LargeFiles || req.AtLeast

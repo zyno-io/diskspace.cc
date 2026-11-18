@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -430,6 +431,46 @@ func TestDeleteValidation(t *testing.T) {
 			}
 			break
 		}
+	}
+}
+
+// Items spread over more folders than a prompt can name are refused.
+func TestDeleteTooSpread(t *testing.T) {
+	tree := t.TempDir()
+	for i := 0; i <= MaxConfirmFolders; i++ {
+		d := filepath.Join(tree, fmt.Sprintf("p%02d", i))
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(d, "f"), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fc := newFakeConfirm()
+	_, v, r, ids := delSetup(t, Config{Confirm: fc.Confirm}, tree)
+	var items []proto.DeleteItem
+	for i := 0; i <= MaxConfirmFolders; i++ {
+		items = append(items, fileItem(ids[fmt.Sprintf("p%02d", i)], "f"))
+	}
+	v.send(proto.MsgDeleteReq, proto.DeleteReq{ReqID: 1, ScanID: r.Started.ScanID, Mode: "trash", Items: items})
+	if st := v.expectStatus(proto.DelFailed); st.Code != "too_spread" {
+		t.Fatalf("%+v", st)
+	}
+	select {
+	case <-fc.reqs:
+		t.Fatal("prompted")
+	default:
+	}
+	// one fewer folder is fine
+	v.send(proto.MsgDeleteReq, proto.DeleteReq{ReqID: 2, ScanID: r.Started.ScanID, Mode: "permanent", Items: items[:MaxConfirmFolders]})
+	v.expectStatus(proto.DelAwaiting)
+	if req := fc.next(t); len(req.Folders) != MaxConfirmFolders || len(req.Items) != MaxConfirmFolders {
+		t.Fatalf("folders %d items %d", len(req.Folders), len(req.Items))
+	}
+	fc.ans <- false
+	v.expectStatus(proto.DelRefused)
+	if !exists(filepath.Join(tree, "p00", "f")) {
+		t.Fatal("touched")
 	}
 }
 

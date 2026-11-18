@@ -29,9 +29,10 @@ that request there**, through a channel web content can't drive:
   An approval given within a second of a dialog appearing (a stray keystroke) is asked again.
 - **No terminal** (for example `--quiet` under a service manager): deletion is unavailable.
 
-The viewer never confirms on its own; its deletion queue is only a review step. The terminal
-prompt lists every item; the dialog lists the 15 largest and the folder of every item, so a
-request can't tuck an extra item out of sight. What the prompt shows is resolved and measured by
+The viewer never confirms on its own; its deletion queue is only a review step. The prompt
+names the folder of every item with its item count (a request spread over more than 20 folders
+is refused), and lists the items themselves: all of them in the terminal (the Windows elevated
+console lists as many as fit one message, largest first), the 10 largest in the dialog. What the prompt shows is resolved and measured by
 the agent: the viewer names scanned entries only by scan id
 (plus a file name inside a scanned folder), never by path or size. Names are shown with control,
 bidi and invisible characters escaped, so a file name can't fake prompt lines or reorder a path.

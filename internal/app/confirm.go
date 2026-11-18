@@ -46,7 +46,8 @@ func newIPCConfirmer(conn interface{ Send(ipc.Msg) error }) *ipcConfirmer {
 }
 
 // encodeConfirm marshals req to fit one IPC line, listing fewer paths if
-// needed (the rest are counted in More).
+// needed (the smallest; counted in More). Folders are never dropped, so the
+// folder of every item is still shown.
 func encodeConfirm(req session.ConfirmRequest) ([]byte, error) {
 	for {
 		b, err := json.Marshal(req)
