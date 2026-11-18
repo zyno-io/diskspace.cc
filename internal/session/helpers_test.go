@@ -250,6 +250,7 @@ type testViewer struct {
 	code    string
 	nodesCT int // ciphertext bytes of NODES frames received
 	frames  chan frameOrErr
+	deleted []*proto.Deleted // DELETED messages expectStatus read past
 }
 
 type frameOrErr struct {

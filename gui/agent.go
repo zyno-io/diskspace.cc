@@ -74,6 +74,25 @@ type proc struct {
 	closed   chan struct{} // closed when the IPC read loop ends
 	stopping atomic.Bool
 	once     sync.Once
+
+	wmu  sync.Mutex
+	gone map[uint64]bool // confirm requests the agent withdrew
+}
+
+// withdraw records that the agent no longer waits for confirm request id.
+func (p *proc) withdraw(id uint64) {
+	p.wmu.Lock()
+	defer p.wmu.Unlock()
+	if p.gone == nil {
+		p.gone = map[uint64]bool{}
+	}
+	p.gone[id] = true
+}
+
+func (p *proc) withdrawn(id uint64) bool {
+	p.wmu.Lock()
+	defer p.wmu.Unlock()
+	return p.gone[id]
 }
 
 func (p *proc) rotate() error { return p.conn.Send(ipc.Msg{T: ipc.TRotate}) }
@@ -99,10 +118,16 @@ func (p *proc) stop(grace time.Duration) {
 	})
 }
 
-// agentOptions are the GUI agent's flags: no current folder, the user's home,
-// never idle out, and serve the local viewer for "Open here".
+// agentOptions are the GUI agent's flags: no current folder, the user's home
+// (and on Windows SID, for an agent elevated as another account), never idle
+// out, serve the local viewer for "Open here", and ask this app to approve
+// deletions.
 func (a *App) agentOptions() *app.Options {
-	return &app.Options{NoCwd: true, Home: a.home, Local: true, Idle: 0, Priority: "low"}
+	o := &app.Options{NoCwd: true, Home: a.home, Local: true, Idle: 0, Priority: "low", ConfirmVia: app.ConfirmApp}
+	if !a.guiElevated {
+		o.SID = elevate.UserSID()
+	}
+	return o
 }
 
 // run starts one agent generation and pumps its IPC messages until it exits.
@@ -170,7 +195,14 @@ func (a *App) run(ctx context.Context, gen int, admin bool) {
 
 	var lastErr string
 	p.readLoop(func(m ipc.Msg) {
-		if m.T == ipc.TError {
+		switch m.T {
+		case ipc.TConfirm:
+			go a.confirm(p, m) // never block the read loop on a dialog
+			return
+		case ipc.TConfirmCancel:
+			p.withdraw(m.ID)
+			return
+		case ipc.TError:
 			lastErr = m.Message
 		}
 		a.apply(p, m)
@@ -263,6 +295,10 @@ func (a *App) apply(p *proc, m ipc.Msg) {
 			}
 		case ipc.TError:
 			s.Notice = m.Message
+		case ipc.TDelete:
+			if m.State == "done" {
+				s.Notice = m.Message // the deletion's result
+			}
 		}
 	})
 }

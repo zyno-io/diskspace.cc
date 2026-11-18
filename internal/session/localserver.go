@@ -45,7 +45,7 @@ func (a *Agent) startLocal() (*http.Server, error) {
 			_ = ws.Close(closeUnknownSID, "unknown session")
 			return
 		}
-		a.serveViewer(ws, g)
+		a.serveViewer(ws, g, false)
 	})
 	serve := func(w http.ResponseWriter, r *http.Request, name string, html bool) {
 		data, err := fs.ReadFile(static, name)

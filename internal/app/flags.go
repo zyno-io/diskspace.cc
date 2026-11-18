@@ -45,6 +45,8 @@ type Options struct {
 	IPCToken    string // agent subcommand
 	GUIElevated bool   // agent: the desktop app elevated this process
 	Launcher    string // agent: cli | app (who started it); default app
+	ConfirmVia  string // agent: app | console: ask the parent to approve deletions over IPC
+	SID         string // the real user's SID (Windows), for the Recycle Bin
 	AgentMode   bool
 	idleSet     bool
 }
@@ -75,6 +77,8 @@ func newFlagSet(o *Options, defaultRelay string, out io.Writer) *flag.FlagSet {
 	fs.StringVar(&o.IPCToken, "ipc-token-file", "", "(agent) IPC token file")
 	fs.StringVar(&o.Launcher, "launcher", "", "(agent) cli or app: where the user sees the code; default app")
 	fs.BoolVar(&o.GUIElevated, "gui-elevated", false, "(agent) elevated by the desktop app")
+	fs.StringVar(&o.ConfirmVia, "confirm-via", "", "(agent) app or console: the parent approves deletions over IPC")
+	fs.StringVar(&o.SID, "user-sid", "", "(Windows) the real user's `SID`, whose Recycle Bin is used")
 	fs.Usage = func() {
 		fmt.Fprintf(out, "Usage: diskspace [flags] [path]\n\nShows what is using your disk space in a browser, end-to-end encrypted.\n\nFlags:\n")
 		fs.PrintDefaults()
@@ -124,6 +128,11 @@ func ParseArgs(args []string, defaultRelay string, out io.Writer) (*Options, err
 	}
 	if o.Idle < 0 {
 		return nil, errors.New("--idle must not be negative")
+	}
+	switch o.ConfirmVia {
+	case "", "app", "console":
+	default:
+		return nil, fmt.Errorf("--confirm-via must be app or console, not %q", o.ConfirmVia)
 	}
 	if o.AgentMode && (o.IPCAddr == "" || o.IPCToken == "") {
 		return nil, errors.New("agent mode requires --ipc and --ipc-token-file")
@@ -214,6 +223,9 @@ func ElevatedArgs(o *Options, parentPID int, relay string) []string {
 	if o.Home != "" {
 		args = append(args, "--home", o.Home)
 	}
+	if o.SID != "" {
+		args = append(args, "--user-sid", o.SID)
+	}
 	if o.Root != "" {
 		args = append(args, "--root", o.Root)
 	}
@@ -245,6 +257,9 @@ func AgentArgsFor(o *Options, parentPID int, relay, ipcAddr, tokenFile, launcher
 	pre := []string{"agent", "--ipc", ipcAddr, "--ipc-token-file", tokenFile}
 	if launcher != "" {
 		pre = append(pre, "--launcher", launcher)
+	}
+	if o.ConfirmVia != "" {
+		pre = append(pre, "--confirm-via", o.ConfirmVia)
 	}
 	return append(pre, ElevatedArgs(o, parentPID, relay)...)
 }

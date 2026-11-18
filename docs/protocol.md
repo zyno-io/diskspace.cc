@@ -88,9 +88,11 @@ Type bytes (`internal/proto/types.go`, `web/src/protocol/types.ts`). JSON payloa
 | a2v | 0x15 | DIR_FILES | binary |
 | a2v | 0x16 | REPLAY_DONE | none |
 | a2v | 0x17 | SCAN_STATE | `{scanId,paused,elapsedMs}`; only to viewers with `caps.scanState` |
+| a2v | 0x18 | DELETE_STATUS | see §9; only to viewers with `caps.del` |
+| a2v | 0x19 | DELETED | see §9; only to viewers with `caps.del` |
 | a2v | 0x7E | BYE | `{reason}` (`superseded`, `shutdown`, `idle`) |
 | a2v | 0x7F | ERROR | `{code,message}` (e.g. `replay_unavailable`) |
-| v2a | 0x81 | CLIENT_HELLO | `{proto:1,ua,caps:{zstdStream,scanState?}}` (frame #0) |
+| v2a | 0x81 | CLIENT_HELLO | `{proto:1,ua,caps:{zstdStream,scanState?,del?}}` (frame #0) |
 | v2a | 0x82 | GET_ROOTS | none |
 | v2a | 0x83 | BROWSE | `{reqId,path}` |
 | v2a | 0x84 | SCAN_START | `{path,crossMounts:false,topFiles?,minFileBytes?}` |
@@ -99,8 +101,10 @@ Type bytes (`internal/proto/types.go`, `web/src/protocol/types.ts`). JSON payloa
 | v2a | 0x87 | CREDIT | `{n}` |
 | v2a | 0x88 | PING | none |
 | v2a | 0x89 | SCAN_PAUSE | `{scanId,paused}`; an idempotent set, not a toggle; only if `AGENT_INFO.features.pause` |
+| v2a | 0x8A | DELETE_REQ | see §9; only if `AGENT_INFO.features.delete` and the viewer sent `caps.del` |
+| v2a | 0x8B | DELETE_CANCEL | `{job}`; see §9 |
 
-Order on a fresh connection: STREAM_INIT, AGENT_INFO, then replay (SCAN_STARTED, SCAN_STATE if paused, every logged NODES, then SCAN_DONE or SCAN_ENDED if the scan had already ended), REPLAY_DONE, then live traffic. A canceled scan replays its NODES too, so a reconnect after Stop shows the partial tree. REPLAY_DONE follows the end message only when the scan had already ended at attach time; a scan still running at attach gets REPLAY_DONE as soon as the replay has delivered what was in the log then, and any end message comes later, live. A live viewer of a scan it stopped receives SCAN_ENDED promptly, without the NODES it has not yet been sent. An ended scan has no pause state: the agent sends no SCAN_STATE for it. The viewer rejects any other first messages. On reconnect the replay repeats from the start of the scan; consumers must treat a SCAN_STARTED for an already-known scanId as a restart.
+Order on a fresh connection: STREAM_INIT, AGENT_INFO, then replay (SCAN_STARTED, SCAN_STATE if paused, every logged NODES, then SCAN_DONE or SCAN_ENDED if the scan had already ended, then, for `caps.del` viewers, every DELETED of that scan), REPLAY_DONE, then live traffic. A canceled scan replays its NODES too, so a reconnect after Stop shows the partial tree. REPLAY_DONE follows the end message only when the scan had already ended at attach time; a scan still running at attach gets REPLAY_DONE as soon as the replay has delivered what was in the log then, and any end message comes later, live. A live viewer of a scan it stopped receives SCAN_ENDED promptly, without the NODES it has not yet been sent. An ended scan has no pause state: the agent sends no SCAN_STATE for it. The viewer rejects any other first messages. On reconnect the replay repeats from the start of the scan; consumers must treat a SCAN_STARTED for an already-known scanId as a restart.
 
 ## 7. NODES and DIR_FILES
 
@@ -136,4 +140,47 @@ The protocol version stays 1 and must match exactly. Optional features are negot
 
 Pause: the viewer sends `SCAN_PAUSE {scanId, paused}`. The agent applies it to the current running scan (any other request changes nothing) and always answers the active viewer with `SCAN_STATE {scanId, paused, elapsedMs}` on the control queue, which is never credit-gated. `elapsedMs` and `PROGRESS.elapsedMs` / `SCAN_DONE.ms` leave out paused time, and no PROGRESS is sent while paused. A viewer that did not advertise `scanState` cannot see or end a pause, so attaching one to a paused scan resumes it.
 
+Deletion: see §9. `CLIENT_HELLO.caps.del: true` says the viewer understands DELETE_STATUS and DELETED; `AGENT_INFO.features.delete` says the agent accepts DELETE_REQ and DELETE_CANCEL.
+
 Latest release: the relay serves `GET /v1/latest` as `{"version":"0.1.2"}` (the newest stable release; empty when unknown). It is plain HTTP on the viewer's own origin, outside the E2E channel, and carries nothing about the session. Viewers, the desktop app and the CLI compare it with `AGENT_INFO.version` (dev builds and prereleases of the same version are ignored). A viewer served by the agent itself has no relay, so no banner.
+
+## 9. Deletion
+
+Every deletion is approved by the person at the scanned computer, in the agent's terminal or the desktop app's native dialog; the viewer never confirms on its own (SECURITY.md). The queue lives in the viewer; the agent keeps none.
+
+**Advertising.** `AGENT_INFO.features.delete = {available, reason?, confirm?, trash, maxItems}`:
+
+- `available: false, reason: "no_confirm"`: the agent has no way to ask (no terminal, e.g. `--quiet` under a service manager). `"unsupported"` is reserved.
+- `confirm`: where approval happens: `terminal` (CLI prompt), `app` (desktop app dialog), `console` (the console of a UAC-elevated Windows CLI).
+- `trash: false` hides the Trash option (only permanent deletion). `maxItems` is 500.
+
+`AGENT_INFO.deleting = {job, state, done, total} | null` is non-null while a job is `preparing`, `awaiting` or `running`, whichever viewer asked for it. A `caps.del` viewer that connects during a job then also gets the job's current DELETE_STATUS.
+
+**Request.** `DELETE_REQ {reqId, scanId, mode: "trash"|"permanent", items}`, each item either `{dir: id}` (a scanned directory, never 0) or `{parent: id, name}` (a non-directory inside scanned directory `parent`). Ids are the scan's dir ids; the agent never takes a path or a size from the viewer. A body over 64 KiB ends the connection (4402), as does DELETE_REQ from a viewer without `caps.del`.
+
+The agent answers with DELETE_STATUS (below), always under a new `job` id. It refuses at once:
+
+| state | code | when |
+| --- | --- | --- |
+| refused | `no_confirm` | no confirmation channel |
+| refused | `scanning` | the scan is running or paused (only a finished or stopped scan can be applied) |
+| refused | `cooldown` | within 30 s of a refusal |
+| refused | `disabled` | after 3 declined or unanswered requests (until the agent restarts) |
+| failed | `busy` | another job is preparing, awaiting or running |
+| failed | `too_spread` | (after preparing) the items lie in more than 20 folders, too many to name in a prompt |
+| failed | `invalid` | bad mode, no items, more than 500, not the current scan, a failed scan, or a malformed item (`dir: 0`, both or neither form, a name that is empty, `.`, `..`, has a separator or NUL, or is over 4096 bytes) |
+
+Otherwise the job runs:
+
+1. `preparing`: duplicates go with their first occurrence. Each other item is checked against the scan (known id; announced without child flags; its DIR record arrived; not read-denied, unreadable or vanished) and resolved by the removal engine (identity, containment in the scan root and `--root`, not a mount or reparse point, not protected). Items inside another requested folder that passed these checks go with it. Folders are then measured by a low-priority scan of their own (4 threads, one filesystem, pinned to the scanned identity) within a 2 s budget; past it, sizes are lower bounds. If no item can be deleted the job ends `failed` / `nothing_deletable` with per-item results, and nobody is asked.
+2. `awaiting`: the prompt shows the folder of every item with counts, the agent-resolved paths with sizes (the terminal all of them; a dialog the 10 largest), totals, warnings (items that will be skipped, other volumes inside, unreadable folders, iCloud/OneDrive files), the requesting connection's verification code and whether it came through the relay. A permanent deletion over 100 GB or 100,000 files (or one not fully measured) asks a second time. Outcomes: declined → `refused`/`declined`; no answer in 2 minutes → `refused`/`timeout`; DELETE_CANCEL, or the requesting connection dropping → `refused`/`canceled`. Each starts the 30 s cooldown; declined and timeout also count toward the 3.
+3. `running`: from approval on, the job belongs to the agent, not the connection: it survives disconnects, supersede and link rotation. DELETE_CANCEL stops it after the current item; quitting the agent stops it after the current entry. Every check of step 1 runs again for each item just before it is removed.
+4. `done`: the job ran; `results` may hold failures. It ends `failed` / `trash_unavailable` instead when every item that ran failed because no Trash could be used (the viewer then offers permanent deletion).
+
+`DELETE_CANCEL {job}` from the active viewer or the requester: before approval it withdraws the request; once running it stops after the current item. Any other job id is ignored.
+
+**DELETE_STATUS** `{job, reqId, state, where?, total, done, freedAlloc, current?, code?, message?, results?}` goes to the active viewer and, while it is connected, the requester: on every state change and about 4 times a second while running (latest wins; a terminal status is never dropped). `total` counts request items; `done` counts finished ones (items that can't be deleted or that go with a folder count from the start); `current` is the agent-resolved path being removed; `where` is the Trash folder. `results[]` (terminal states) is `{i, ok, code?, message?, freedAlloc, files, dirs}` with `i` indexing `DELETE_REQ.items`. Item codes: `changed` (not what was scanned: replaced, swapped for a link, moved, or outside the root), `permission`, `mount`, `protected`, `not_found`, `not_scanned`, `invalid_name`, `partial` (permanent: some contents removed, the folder stayed), `canceled` (not reached), `trash_unavailable`, `failed`. An item inside another requested folder repeats that folder's outcome.
+
+**DELETED** `{scanId, job, items}` with items `{dir, partial?, freedAlloc, freedApparent, files, dirs}` or `{parent, name, freedAlloc, freedApparent}` records what went (`files`/`dirs`: contents below the folder; for a folder moved to the Trash, the agent's measurement). It is appended to the scan log's annex after the end message, so live and replayed viewers get `NODES…, SCAN_DONE|SCAN_ENDED, DELETED…, REPLAY_DONE`; only `caps.del` viewers get it. A new scan has a new log and no annex. A job's items are split into DELETED messages of at most ~256 KiB. Viewers apply them idempotently per job and item.
+
+While a job is preparing, awaiting or running, SCAN_START is answered with `ERROR {code:"busy"}`.

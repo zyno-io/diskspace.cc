@@ -47,6 +47,9 @@ func Run(args []string, version, defaultRelay string, stdout, stderr io.Writer) 
 		fmt.Fprintln(stderr, "diskspace:", err)
 		return 2
 	}
+	if o.SID == "" && !elevate.IsElevated() {
+		o.SID = elevate.UserSID() // passed on to an elevated agent
+	}
 	if err := prio.ApplyProcess(o.PriorityLevel()); err != nil {
 		fmt.Fprintln(os.Stderr, "diskspace: could not lower priority:", err)
 	}
@@ -85,6 +88,7 @@ func sessionConfig(o *Options, version string) session.Config {
 		Local:     o.Local,
 		Root:      o.Root,
 		Home:      o.Home,
+		SID:       o.SID,
 		AutoScan:  o.Path,
 		Elevation: elevationKind(),
 		FDA:       string(elevate.ProbeFDA()),
@@ -119,6 +123,10 @@ func runCLI(o *Options, version string, stdout, stderr io.Writer) int {
 		FDADenied: cfg.FDA == "denied", GOOS: runtime.GOOS,
 		TermSize: cli.StdoutSize,
 	})
+	// Deletions are approved in this terminal; without one they are off.
+	if c := (&cli.Confirmer{Hold: rend.Hold}); c.Available() {
+		cfg.Confirm, cfg.ConfirmKind = c.Confirm, ConfirmTerminal
+	}
 	return serve(o, cfg, rend, nil)
 }
 
@@ -254,6 +262,15 @@ func ipcEvent(m ipc.Msg) (session.Event, bool) {
 		}
 	case ipc.TError:
 		return session.Event{Kind: session.EvError, Message: m.Message}, true
+	case ipc.TDelete:
+		switch m.State {
+		case "started":
+			return session.Event{Kind: session.EvDeleteStarted, Message: m.Message}, true
+		case "item":
+			return session.Event{Kind: session.EvDeleteItem, Path: m.Path, Message: m.Message}, true
+		case "done":
+			return session.Event{Kind: session.EvDeleteDone, Message: m.Message}, true
+		}
 	}
 	return session.Event{}, false
 }
@@ -281,6 +298,12 @@ func eventIPC(ev session.Event, elevated bool, fda string) (ipc.Msg, bool) {
 		return ipc.Msg{T: ipc.TScan, State: "resumed", Path: ev.Path}, true
 	case session.EvScanError:
 		return ipc.Msg{T: ipc.TError, Message: "scan failed: " + ev.Message}, true
+	case session.EvDeleteStarted:
+		return ipc.Msg{T: ipc.TDelete, State: "started", Message: ev.Message}, true
+	case session.EvDeleteItem:
+		return ipc.Msg{T: ipc.TDelete, State: "item", Path: ev.Path, Message: ev.Message}, true
+	case session.EvDeleteDone:
+		return ipc.Msg{T: ipc.TDelete, State: "done", Message: ev.Message}, true
 	case session.EvError:
 		m := ev.Message
 		if m == "" && ev.Err != nil {

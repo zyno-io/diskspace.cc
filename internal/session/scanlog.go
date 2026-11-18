@@ -70,6 +70,9 @@ type scanLog struct {
 	notify  chan struct{}
 	end     *logEnd
 	readers map[*logReader]struct{}
+	// annex holds messages that follow the end message (DELETED), in order.
+	// They are small and never trimmed; a new scan starts a new log.
+	annex [][]byte
 }
 
 func newScanLog(scanID uint64, capBytes int64) *scanLog {
@@ -177,6 +180,19 @@ func (l *scanLog) finish(e logEnd) {
 	l.mu.Unlock()
 }
 
+// appendAnnex adds a message that is delivered after the end message (to
+// viewers that understand it). The log must have finished.
+func (l *scanLog) appendAnnex(body []byte) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.end == nil {
+		return false
+	}
+	l.annex = append(l.annex, body)
+	l.broadcastLocked()
+	return true
+}
+
 func (l *scanLog) countNow() int {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -192,6 +208,8 @@ type logReader struct {
 	dec    []byte // decompressed contents of seg (when seg is compressed)
 	decSeg *segment
 	closed bool
+	// annexPos is the next annex entry to deliver (sender goroutine only).
+	annexPos int
 }
 
 // newReader registers a reader at entry 0. It fails when the log has already
@@ -345,11 +363,26 @@ func (l *scanLog) runBatcher(recs <-chan proto.Record, tooBig func()) {
 	}
 }
 
-// snapshot returns the entry count and whether the log has finished, atomically.
-func (l *scanLog) snapshot() (count int, ended bool) {
+// snapshot returns the entry count, whether the log has finished and the
+// annex length, atomically.
+func (l *scanLog) snapshot() (count int, ended bool, annex int) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	return l.count, l.end != nil
+	return l.count, l.end != nil, len(l.annex)
+}
+
+// nextAnnex returns the reader's next annex entry, or nil and a channel that
+// is closed on the next append.
+func (r *logReader) nextAnnex() ([]byte, <-chan struct{}) {
+	l := r.l
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if r.annexPos < len(l.annex) {
+		b := l.annex[r.annexPos]
+		r.annexPos++
+		return b, nil
+	}
+	return nil, l.notify
 }
 
 // endNow returns the terminal message if the log is finished.

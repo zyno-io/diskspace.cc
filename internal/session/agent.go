@@ -44,9 +44,12 @@ const (
 	EvRotated
 	EvIdle
 	EvError
-	EvScanProgress // Path, Totals{Files,Dirs,Alloc} running counters (~4 Hz)
-	EvScanPaused   // Path, Totals, Ms (elapsed excluding paused time)
-	EvScanResumed  // Path, Totals, Ms
+	EvScanProgress  // Path, Totals{Files,Dirs,Alloc} running counters (~4 Hz)
+	EvScanPaused    // Path, Totals, Ms (elapsed excluding paused time)
+	EvScanResumed   // Path, Totals, Ms
+	EvDeleteStarted // Message: an approved deletion started
+	EvDeleteItem    // Path, Message: one top-level item's outcome (audit line)
+	EvDeleteDone    // Message: summary of a deletion that ran
 )
 
 // Event reports session activity to the CLI / IPC layer. Events are delivered
@@ -82,7 +85,23 @@ type Config struct {
 	LogCap    int64         // scan log cap in compressed bytes (default 256 MiB)
 	Logger    *slog.Logger
 	Events    func(Event)
+
+	// Confirm asks the person at this computer to approve a deletion through
+	// a channel web content can't drive (terminal prompt, native dialog). It
+	// returns (false, nil) when declined, ErrConfirmTimeout when unanswered
+	// and ctx.Err() when ctx ends (request withdrawn, 2-minute limit). nil:
+	// deletion is unavailable ("no_confirm"). It may be called from any
+	// goroutine, one request at a time.
+	Confirm func(ctx context.Context, req ConfirmRequest) (bool, error)
+	// ConfirmKind is where Confirm asks: terminal | app | console.
+	ConfirmKind string
+	// SID is the real user's SID (Windows), whose Recycle Bin is used ("" =
+	// this process's user).
+	SID string
 }
+
+// goos is runtime.GOOS (a var for tests of platform wording).
+var goos = runtime.GOOS
 
 type generation struct {
 	sec    *crypto.Secret
@@ -118,6 +137,14 @@ type Agent struct {
 
 	hsMu sync.Mutex
 	hs   []time.Time
+
+	// deletion (a.mu; the job slot is changed under scanMu too)
+	del         *delJob // preparing, awaiting or running
+	delSeq      uint64
+	delStrikes  int       // refused prompts this run
+	delCooldown time.Time // no new request before this
+	delClosed   bool      // Run is ending: no new jobs
+	delWG       sync.WaitGroup
 }
 
 // NewAgent validates cfg and creates the link secret.
@@ -294,6 +321,7 @@ loop:
 	}
 	a.shutdown(srv)
 	a.lifeCancel()
+	a.waitDeletes(5 * time.Second) // an approved deletion stops after the current entry
 	wg.Wait()
 	return result
 }
@@ -376,7 +404,7 @@ func (a *Agent) buildInfo() proto.AgentInfo {
 		Launcher:     a.cfg.Launcher,
 		Home:         home,
 		Volumes:      a.volumes(),
-		Features:     proto.Features{Pause: true},
+		Features:     proto.Features{Pause: true, Delete: a.deleteFeature()},
 	}
 	if info.Launcher == "" {
 		info.Launcher = "cli"
@@ -423,6 +451,7 @@ type scanRun struct {
 	tickMu      sync.Mutex // serializes the progress ticker with pause/resume
 	mu          sync.Mutex
 	state       string // running | done | canceled | error
+	marks       dirMarks
 	paused      bool
 	pausedAt    time.Time
 	pausedTotal time.Duration // completed pauses
@@ -516,6 +545,12 @@ var hookBeforeRun func(*scanRun)
 func (a *Agent) startScan(opts scan.Options) (*scanRun, error) {
 	a.scanMu.Lock()
 	defer a.scanMu.Unlock()
+	a.mu.Lock()
+	deleting := a.del != nil
+	a.mu.Unlock()
+	if deleting {
+		return nil, errDeleting
+	}
 	if opts.Threads == 0 {
 		opts.Threads = a.cfg.Threads
 	}
@@ -626,7 +661,10 @@ func (r *scanRun) run() {
 		}
 	}()
 
-	st, err := r.scanner.Run(r.ctx, func(rec proto.Record) { recs <- rec })
+	st, err := r.scanner.Run(r.ctx, func(rec proto.Record) {
+		r.marks.note(rec)
+		recs <- rec
+	})
 	close(stopTick)
 	<-tickDone
 	close(recs)

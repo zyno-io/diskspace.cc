@@ -22,6 +22,12 @@ diskspace is one Go module with a shared core and three thin shells (CLI, deskto
 - **Agent priority:** the agent runs at low CPU and disk priority by default (`--priority low`; `normal` opts out) so a big scan does not starve the desktop: nice 10 plus utility I/O tier on macOS, below-normal priority class on Windows, per-worker-thread nice and best-effort ioprio 7 on Linux. No cgo.
 - **Local mode:** the agent can serve the same SPA and `/v1/view` on `127.0.0.1:<random>`, with Host/Origin checks and the same handshake. The desktop app's in-window viewer and `--no-relay` use it.
 
+## Deletion
+
+- **Approval on the host:** a viewer's DELETE_REQ names scanned entries by id. The agent (`internal/session/delete.go`) checks them against the scan, resolves them with the removal engine, measures folders with a short low-priority scan, and asks through `Config.Confirm`: a `/dev/tty` / `CONIN$` prompt in the CLI (`internal/cli/confirm.go`), a native dialog in the desktop app (`gui/confirm.go`; the agent child asks over IPC `confirm` / `confirmReply`), or the original console of a UAC-elevated Windows CLI (the same IPC messages). Without one, deletion is unavailable. One request is pending at a time, with a cooldown and a 3-refusal limit.
+- **Running:** an approved job runs on the agent's lifetime, not the connection's. It reports DELETE_STATUS at ~4 Hz and appends DELETED to the scan log's *annex*, which every reader gets after the end message, so a reconnect replays the deletions after the scan. A new scan can't start while a job runs.
+- **Removal engine** (`internal/scan/remove*.go`, `trash_*.go`, `protected*.go`): every operation is relative to a pinned parent handle and identity-checked; it never follows links or crosses filesystems and refuses protected folders. Trash: `~/.Trash` (macOS), the freedesktop Trash (Linux), `$Recycle.Bin\<SID>` (Windows), always the real user's (an elevated agent gets `--home` and, on Windows, `--user-sid`).
+
 ## Scanner (`internal/scan`)
 
 - **Scheduling:** work-stealing deques, one per worker (clamped to 2×CPUs, between 8 and 32). Owners pop LIFO (depth-first, bounded memory); thieves steal the shallowest directories, which spreads early work across top-level folders so the treemap's proportions settle quickly.

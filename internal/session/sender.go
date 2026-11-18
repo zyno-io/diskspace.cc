@@ -37,6 +37,8 @@ var errSenderClosed = errors.New("session: sender closed")
 // sender is the single writer of one viewer connection. Priority:
 //
 //	control queue (JSON replies, BYE, ERROR, SCAN_* lifecycle)
+//	  > latest DELETE_STATUS (coalesced)
+//	  > scan-log annex (DELETED) once the end message is out (no credit)
 //	  > scan-log entries at this connection's cursor (only with credit)
 //	  > latest PROGRESS (coalesced, dropped when out of credit)
 //
@@ -66,8 +68,12 @@ type sender struct {
 	replayPending bool
 	replayUntil   int
 	replayWantEnd bool // the log had ended at attach: REPLAY_DONE follows the end message
+	replayAnnex   int  // annex entries present at attach: REPLAY_DONE follows them too (del viewers)
 	scanState     bool // the viewer advertised caps.scanState
-	liveAttach    bool // attached by a scan start (not a replay): a cancel jumps straight to SCAN_ENDED
+	del           bool // the viewer advertised caps.del (DELETE_STATUS, DELETED)
+	delStatus     []byte
+	delStatusJob  uint64 // the job delStatus belongs to
+	liveAttach    bool   // attached by a scan start (not a replay): a cancel jumps straight to SCAN_ENDED
 	endSent       bool
 	lastProgress  time.Time
 }
@@ -222,7 +228,7 @@ func (s *sender) attach(run *scanRun, replay bool) {
 	s.mu.Lock()
 	old := s.rd
 	s.rd, s.endSent, s.progress, s.replayPending = rd, false, nil, false
-	s.liveAttach, s.replayWantEnd = !replay, false
+	s.liveAttach, s.replayWantEnd, s.replayAnnex = !replay, false, 0
 	// A viewer that never reads and keeps starting scans supersedes its own
 	// not-yet-sent attach messages instead of growing the control queue (the
 	// old log reader is closed below, so the superseded scan's data is never
@@ -244,7 +250,7 @@ func (s *sender) attach(run *scanRun, replay bool) {
 		}
 		if replay {
 			s.replayPending = true
-			s.replayUntil, s.replayWantEnd = run.log.snapshot()
+			s.replayUntil, s.replayWantEnd, s.replayAnnex = run.log.snapshot()
 		}
 	}
 	for _, m := range msgs {
@@ -281,6 +287,34 @@ func (s *sender) dropLastAttachLocked() {
 	clear(s.ctrl[len(kept):])
 	s.ctrl = kept
 	s.lastAttach = nil
+}
+
+// setDeleteStatus offers a DELETE_STATUS body; a newer one replaces an unsent
+// older one. Only viewers that advertised caps.del get it.
+func (s *sender) setDeleteStatus(job uint64, body []byte) {
+	s.mu.Lock()
+	if !s.del {
+		s.mu.Unlock()
+		return
+	}
+	s.delStatus, s.delStatusJob = body, job
+	s.mu.Unlock()
+	s.poke()
+}
+
+// pushDeleteFinal queues a terminal DELETE_STATUS in order with the control
+// queue (it must not be lost or overtaken by an older coalesced status).
+func (s *sender) pushDeleteFinal(job uint64, body []byte) {
+	s.mu.Lock()
+	if !s.del {
+		s.mu.Unlock()
+		return
+	}
+	if s.delStatusJob == job {
+		s.delStatus = nil // superseded; another job's pending status stays
+	}
+	s.mu.Unlock()
+	s.push(body)
 }
 
 func (s *sender) release() {
@@ -324,7 +358,13 @@ func (s *sender) pick() pick {
 		s.mu.Unlock()
 		return pick{closing: true}
 	}
+	if ds := s.delStatus; ds != nil {
+		s.delStatus = nil
+		s.mu.Unlock()
+		return pick{body: ds}
+	}
 	rd, credit, replayPending, replayUntil, wantEnd, endSent := s.rd, s.credit, s.replayPending, s.replayUntil, s.replayWantEnd, s.endSent
+	del, replayAnnex := s.del, s.replayAnnex
 	// A reader is live once any replay of the log is behind it: it attached
 	// before the scan started, or it has caught up with a scan that was still
 	// running when it attached (auto-scan viewers and reconnects).
@@ -348,9 +388,19 @@ func (s *sender) pick() pick {
 			rd.skipToEnd()
 			return pick{body: e.Body}
 		}
+		// DELETED (the annex) follows the end message, for viewers that
+		// understand it: NODES…, SCAN_DONE/ENDED, DELETED…, REPLAY_DONE.
+		var annexWait <-chan struct{}
+		if endSent && del {
+			if b, w := rd.nextAnnex(); b != nil {
+				return pick{body: b}
+			} else {
+				annexWait = w
+			}
+		}
 		// REPLAY_DONE follows the replayed NODES and, if the scan had already
-		// ended when the viewer attached, the end message too.
-		if replayPending && rd.pos() >= replayUntil && (!wantEnd || endSent) {
+		// ended when the viewer attached, the end message and the annex too.
+		if replayPending && rd.pos() >= replayUntil && (!wantEnd || (endSent && (!del || rd.annexPos >= replayAnnex))) {
 			s.mu.Lock()
 			s.replayPending = false
 			s.mu.Unlock()
@@ -378,6 +428,10 @@ func (s *sender) pick() pick {
 			}
 		default:
 			p.wait = wait
+		}
+		if annexWait != nil {
+			// taken before poll: an annex append in between has closed it
+			p.wait = annexWait
 		}
 	}
 	if prog != nil && credit > 0 {

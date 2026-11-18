@@ -5,11 +5,13 @@ package ipc
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -56,8 +58,22 @@ func TestAuthSuccessAndMessages(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, err := r.c.Recv()
-	if err != nil || got != want {
+	if err != nil || !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %+v err %v", got, err)
+	}
+	// deletion approval round trip: request (child -> parent), reply (parent -> child)
+	creq := Msg{T: TConfirm, ID: 7, Confirm: json.RawMessage(`{"mode":"trash","items":[{"path":"/a\\nb"}]}`)}
+	if err := child.Send(creq); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := r.c.Recv(); err != nil || !reflect.DeepEqual(got, creq) {
+		t.Fatalf("confirm: got %+v err %v", got, err)
+	}
+	if err := r.c.Send(Msg{T: TConfirmReply, ID: 7, OK: true, State: "approved"}); err != nil {
+		t.Fatal(err)
+	}
+	if m, err := child.Recv(); err != nil || m.T != TConfirmReply || m.ID != 7 || !m.OK {
+		t.Fatalf("reply: %+v %v", m, err)
 	}
 	if err := r.c.Send(Msg{T: TRotate}); err != nil {
 		t.Fatal(err)

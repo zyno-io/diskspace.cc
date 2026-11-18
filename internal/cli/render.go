@@ -43,6 +43,13 @@ type Renderer struct {
 	relayWarned bool
 	scanFiles   uint64
 	lastLink    string // URL+local last printed; relay reconnects re-emit the same link
+	held        int    // Hold depth: a prompt owns the terminal
+	pending     []heldLine
+}
+
+type heldLine struct {
+	w io.Writer
+	s string
 }
 
 // New creates a Renderer.
@@ -78,6 +85,42 @@ func (r *Renderer) style(code, s string) string {
 	return "\x1b[" + code + "m" + s + "\x1b[0m"
 }
 
+// Hold pauses all output (the status line is cleared and later lines are
+// kept) until the returned release is called, so a prompt owns the terminal.
+func (r *Renderer) Hold() (release func()) {
+	r.mu.Lock()
+	r.clearLocked()
+	r.held++
+	r.mu.Unlock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			r.mu.Lock()
+			defer r.mu.Unlock()
+			if r.held--; r.held > 0 {
+				return
+			}
+			p := r.pending
+			r.pending = nil
+			for _, l := range p {
+				fmt.Fprintln(l.w, l.s)
+			}
+			if r.o.TTY {
+				r.drawLocked()
+			}
+		})
+	}
+}
+
+// printlnLocked writes a permanent line now, or after the hold ends.
+func (r *Renderer) printlnLocked(w io.Writer, s string) {
+	if r.held > 0 {
+		r.pending = append(r.pending, heldLine{w, s})
+		return
+	}
+	fmt.Fprintln(w, s)
+}
+
 func (r *Renderer) clearLocked() {
 	if r.live {
 		fmt.Fprint(r.o.Out, "\r\x1b[2K")
@@ -88,14 +131,14 @@ func (r *Renderer) clearLocked() {
 // line prints a permanent line, preserving the in-place status below it.
 func (r *Renderer) lineLocked(w io.Writer, s string) {
 	r.clearLocked()
-	fmt.Fprintln(w, s)
+	r.printlnLocked(w, s)
 	if r.o.TTY && r.status != "" && w == r.o.Out {
 		r.drawLocked()
 	}
 }
 
 func (r *Renderer) drawLocked() {
-	if r.status == "" {
+	if r.status == "" || r.held > 0 {
 		return
 	}
 	fmt.Fprint(r.o.Out, "\r\x1b[2K"+r.status)
@@ -109,7 +152,7 @@ func (r *Renderer) setStatusLocked(s string, persist bool) {
 	}
 	if !r.o.TTY {
 		if persist {
-			fmt.Fprintln(r.o.Out, s)
+			r.printlnLocked(r.o.Out, s)
 		}
 		return
 	}
@@ -331,6 +374,20 @@ func (r *Renderer) Event(ev session.Event) {
 			r.relayWarned = false
 			r.lineLocked(r.o.Out, "Relay connection restored.")
 		}
+		r.mu.Unlock()
+	case session.EvDeleteStarted:
+		r.mu.Lock()
+		r.setStatusLocked(ev.Message, true)
+		r.mu.Unlock()
+	case session.EvDeleteItem:
+		// the audit trail: one permanent line per requested item, even with --quiet
+		r.mu.Lock()
+		r.lineLocked(r.o.Out, "Deletion · "+ev.Path+" · "+ev.Message)
+		r.mu.Unlock()
+	case session.EvDeleteDone:
+		r.mu.Lock()
+		r.status = "" // the "Deleting…" status is over
+		r.lineLocked(r.o.Out, ev.Message)
 		r.mu.Unlock()
 	case session.EvIdle:
 		r.Info("No viewer connected for a while — exiting.")

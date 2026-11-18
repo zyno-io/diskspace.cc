@@ -23,18 +23,22 @@ const (
 	MsgDirFiles     = 0x15
 	MsgReplayDone   = 0x16
 	MsgScanState    = 0x17 // only sent to viewers that advertised caps.scanState
+	MsgDeleteStatus = 0x18 // only sent to viewers that advertised caps.del
+	MsgDeleted      = 0x19 // only sent to viewers that advertised caps.del
 	MsgBye          = 0x7e
 	MsgError        = 0x7f
 	// viewer -> agent
-	MsgClientHello = 0x81
-	MsgGetRoots    = 0x82
-	MsgBrowse      = 0x83
-	MsgScanStart   = 0x84
-	MsgScanCancel  = 0x85
-	MsgDirFilesReq = 0x86
-	MsgCredit      = 0x87
-	MsgPing        = 0x88
-	MsgScanPause   = 0x89 // only sent when AGENT_INFO.features.pause
+	MsgClientHello  = 0x81
+	MsgGetRoots     = 0x82
+	MsgBrowse       = 0x83
+	MsgScanStart    = 0x84
+	MsgScanCancel   = 0x85
+	MsgDirFilesReq  = 0x86
+	MsgCredit       = 0x87
+	MsgPing         = 0x88
+	MsgScanPause    = 0x89 // only sent when AGENT_INFO.features.pause
+	MsgDeleteReq    = 0x8a // only sent when AGENT_INFO.features.delete
+	MsgDeleteCancel = 0x8b
 )
 
 // Codec bytes at the start of every plaintext frame.
@@ -78,7 +82,27 @@ type ScanRef struct {
 // Features lists the optional protocol extensions an agent supports. A viewer
 // sends the matching v2a message only if the feature is advertised.
 type Features struct {
-	Pause bool `json:"pause,omitempty"`
+	Pause  bool           `json:"pause,omitempty"`
+	Delete *DeleteFeature `json:"delete,omitempty"`
+}
+
+// DeleteFeature is AGENT_INFO.features.delete: the agent accepts DELETE_REQ
+// and DELETE_CANCEL. Every request is approved on the scanned computer.
+type DeleteFeature struct {
+	Available bool   `json:"available"`
+	Reason    string `json:"reason,omitempty"`  // no_confirm | unsupported (when !Available)
+	Confirm   string `json:"confirm,omitempty"` // terminal | app | console
+	Trash     bool   `json:"trash"`             // a Trash / Recycle Bin can be used
+	MaxItems  int    `json:"maxItems,omitempty"`
+}
+
+// Deleting is AGENT_INFO.deleting: the deletion job that is preparing,
+// awaiting approval or running (any viewer's).
+type Deleting struct {
+	Job   uint64 `json:"job"`
+	State string `json:"state"`
+	Done  int    `json:"done"`
+	Total int    `json:"total"`
 }
 
 // ProtoVersion is the application protocol version. Agent and viewer must
@@ -89,24 +113,25 @@ const ProtoVersion = 1
 
 // AgentInfo is the AGENT_INFO payload.
 type AgentInfo struct {
-	Proto        int      `json:"proto"`
-	Version      string   `json:"version"`
-	OS           string   `json:"os"`
-	Arch         string   `json:"arch"`
-	Hostname     string   `json:"hostname"`
-	User         string   `json:"user"`
-	InvokingUser string   `json:"invokingUser"`
-	Elevated     bool     `json:"elevated"`
-	Elevation    string   `json:"elevation"` // none | sudo | uac | gui-admin | native
-	Launcher     string   `json:"launcher"`  // cli | app (where the user sees the verification code)
-	FDA          *string  `json:"fda"`       // granted | denied | null
-	Root         *string  `json:"root"`
-	Cwd          *Cwd     `json:"cwd"`
-	Home         string   `json:"home"`
-	AutoScan     *string  `json:"autoScan"`
-	Volumes      []Volume `json:"volumes"`
-	Scan         *ScanRef `json:"scan"`
-	Features     Features `json:"features"`
+	Proto        int       `json:"proto"`
+	Version      string    `json:"version"`
+	OS           string    `json:"os"`
+	Arch         string    `json:"arch"`
+	Hostname     string    `json:"hostname"`
+	User         string    `json:"user"`
+	InvokingUser string    `json:"invokingUser"`
+	Elevated     bool      `json:"elevated"`
+	Elevation    string    `json:"elevation"` // none | sudo | uac | gui-admin | native
+	Launcher     string    `json:"launcher"`  // cli | app (where the user sees the verification code)
+	FDA          *string   `json:"fda"`       // granted | denied | null
+	Root         *string   `json:"root"`
+	Cwd          *Cwd      `json:"cwd"`
+	Home         string    `json:"home"`
+	AutoScan     *string   `json:"autoScan"`
+	Volumes      []Volume  `json:"volumes"`
+	Scan         *ScanRef  `json:"scan"`
+	Features     Features  `json:"features"`
+	Deleting     *Deleting `json:"deleting"`
 }
 
 // MarshalJSON guarantees "volumes" is an array, never null.
@@ -215,6 +240,8 @@ type ClientCaps struct {
 	// ScanState: the viewer understands SCAN_STATE (0x17). The agent sends no
 	// new a2v message type to a viewer that did not advertise it.
 	ScanState bool `json:"scanState,omitempty"`
+	// Del: the viewer understands DELETE_STATUS (0x18) and DELETED (0x19).
+	Del bool `json:"del,omitempty"`
 }
 
 type ClientHello struct {
@@ -238,6 +265,92 @@ type ScanCancel struct {
 type ScanPause struct {
 	ScanID uint64 `json:"scanId"`
 	Paused bool   `json:"paused"`
+}
+
+// Deletion request limits.
+const (
+	MaxDeleteItems = 500
+)
+
+// Deletion modes and job states.
+const (
+	DeleteModeTrash     = "trash"
+	DeleteModePermanent = "permanent"
+
+	DelPreparing = "preparing"
+	DelAwaiting  = "awaiting"
+	DelRunning   = "running"
+	DelDone      = "done"    // the job ran (results may hold failures)
+	DelRefused   = "refused" // not approved (declined, timeout, canceled, limits, scanning)
+	DelFailed    = "failed"  // never ran (invalid, busy, nothing deletable)
+)
+
+// DeleteItem is one DELETE_REQ item: a scanned directory by id, or a
+// non-directory by its parent directory's id and its name.
+type DeleteItem struct {
+	Dir    *uint64 `json:"dir,omitempty"`
+	Parent *uint64 `json:"parent,omitempty"`
+	Name   *string `json:"name,omitempty"`
+}
+
+// DeleteReq is the DELETE_REQ payload (v2a 0x8A).
+type DeleteReq struct {
+	ReqID  uint64       `json:"reqId"`
+	ScanID uint64       `json:"scanId"`
+	Mode   string       `json:"mode"`
+	Items  []DeleteItem `json:"items"`
+}
+
+// DeleteCancel is the DELETE_CANCEL payload (v2a 0x8B): before approval it
+// withdraws the request; once running the job stops after the current item.
+type DeleteCancel struct {
+	Job uint64 `json:"job"`
+}
+
+// DeleteResult is one item's outcome; I indexes DeleteReq.Items.
+type DeleteResult struct {
+	I          int    `json:"i"`
+	OK         bool   `json:"ok"`
+	Code       string `json:"code,omitempty"`
+	Message    string `json:"message,omitempty"`
+	FreedAlloc uint64 `json:"freedAlloc"`
+	Files      uint64 `json:"files"`
+	Dirs       uint64 `json:"dirs"`
+}
+
+// DeleteStatus is the DELETE_STATUS payload (a2v 0x18).
+type DeleteStatus struct {
+	Job        uint64         `json:"job"`
+	ReqID      uint64         `json:"reqId"`
+	State      string         `json:"state"`
+	Where      string         `json:"where,omitempty"`
+	Total      int            `json:"total"`
+	Done       int            `json:"done"`
+	FreedAlloc uint64         `json:"freedAlloc"`
+	Current    string         `json:"current,omitempty"`
+	Code       string         `json:"code,omitempty"`
+	Message    string         `json:"message,omitempty"`
+	Results    []DeleteResult `json:"results,omitempty"`
+}
+
+// DeletedItem is one tombstone: a directory (Dir set; Partial when only some
+// of its contents went) or a non-directory (Parent + Name).
+type DeletedItem struct {
+	Dir           *uint64 `json:"dir,omitempty"`
+	Parent        *uint64 `json:"parent,omitempty"`
+	Name          *string `json:"name,omitempty"`
+	Partial       bool    `json:"partial,omitempty"`
+	FreedAlloc    uint64  `json:"freedAlloc"`
+	FreedApparent uint64  `json:"freedApparent"`
+	Files         *uint64 `json:"files,omitempty"`
+	Dirs          *uint64 `json:"dirs,omitempty"`
+}
+
+// Deleted is the DELETED payload (a2v 0x19): tombstones for the scan's tree.
+type Deleted struct {
+	ScanID uint64        `json:"scanId"`
+	Job    uint64        `json:"job"`
+	Items  []DeletedItem `json:"items"`
 }
 
 type Browse struct {
