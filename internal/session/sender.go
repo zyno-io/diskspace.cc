@@ -72,7 +72,8 @@ type sender struct {
 	scanState     bool // the viewer advertised caps.scanState
 	del           bool // the viewer advertised caps.del (DELETE_STATUS, DELETED)
 	delStatus     []byte
-	liveAttach    bool // attached by a scan start (not a replay): a cancel jumps straight to SCAN_ENDED
+	delStatusJob  uint64 // the job delStatus belongs to
+	liveAttach    bool   // attached by a scan start (not a replay): a cancel jumps straight to SCAN_ENDED
 	endSent       bool
 	lastProgress  time.Time
 }
@@ -290,26 +291,28 @@ func (s *sender) dropLastAttachLocked() {
 
 // setDeleteStatus offers a DELETE_STATUS body; a newer one replaces an unsent
 // older one. Only viewers that advertised caps.del get it.
-func (s *sender) setDeleteStatus(body []byte) {
+func (s *sender) setDeleteStatus(job uint64, body []byte) {
 	s.mu.Lock()
 	if !s.del {
 		s.mu.Unlock()
 		return
 	}
-	s.delStatus = body
+	s.delStatus, s.delStatusJob = body, job
 	s.mu.Unlock()
 	s.poke()
 }
 
 // pushDeleteFinal queues a terminal DELETE_STATUS in order with the control
 // queue (it must not be lost or overtaken by an older coalesced status).
-func (s *sender) pushDeleteFinal(body []byte) {
+func (s *sender) pushDeleteFinal(job uint64, body []byte) {
 	s.mu.Lock()
 	if !s.del {
 		s.mu.Unlock()
 		return
 	}
-	s.delStatus = nil
+	if s.delStatusJob == job {
+		s.delStatus = nil // superseded; another job's pending status stays
+	}
 	s.mu.Unlock()
 	s.push(body)
 }
@@ -426,7 +429,8 @@ func (s *sender) pick() pick {
 		default:
 			p.wait = wait
 		}
-		if p.wait == nil {
+		if annexWait != nil {
+			// taken before poll: an annex append in between has closed it
 			p.wait = annexWait
 		}
 	}

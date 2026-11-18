@@ -167,17 +167,68 @@ func TestConfirmDialogLargePermanentAsksTwice(t *testing.T) {
 	}
 }
 
+// An approval given right after the dialog appeared is asked again; three
+// hasty ones decline.
+func TestConfirmDialogHastyAnswerAskedAgain(t *testing.T) {
+	d := &stubDialog{answers: []bool{true, true, true}}
+	a, _, c := startWithChild(t, d.show)
+	a.mu.Lock()
+	a.dialogMinReact = time.Hour
+	a.mu.Unlock()
+	ask(t, c, 1, guiReq)
+	if r := replyOf(t, c); r.OK || d.count() != 3 {
+		t.Fatalf("hasty: %+v after %d dialogs", r, d.count())
+	}
+}
+
+// A request withdrawn while an earlier dialog was up is never shown.
+func TestConfirmDialogSkipsWithdrawn(t *testing.T) {
+	release := make(chan struct{})
+	d := &stubDialog{answers: []bool{false, true}}
+	first := true
+	var mu sync.Mutex
+	show := func(ctx context.Context, o wruntime.MessageDialogOptions) (string, error) {
+		mu.Lock()
+		wait := first
+		first = false
+		mu.Unlock()
+		if wait {
+			<-release
+		}
+		return d.show(ctx, o)
+	}
+	_, _, c := startWithChild(t, show)
+	ask(t, c, 1, guiReq) // up, unanswered
+	time.Sleep(100 * time.Millisecond)
+	ask(t, c, 2, guiReq) // waits behind it
+	if err := c.Send(ipc.Msg{T: ipc.TConfirmCancel, ID: 2}); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	close(release)
+	if r := replyOf(t, c); r.ID != 1 || r.OK {
+		t.Fatalf("first: %+v", r)
+	}
+	time.Sleep(200 * time.Millisecond)
+	if n := d.count(); n != 1 {
+		t.Fatalf("%d dialogs shown, want 1 (the withdrawn one skipped)", n)
+	}
+}
+
 // An answer to a request the agent withdrew is not sent; the launcher says so.
 func TestConfirmDialogWithdrawn(t *testing.T) {
 	release := make(chan struct{})
 	d := &stubDialog{answers: []bool{true}}
 	// the dialog stays up until the request was withdrawn
+	up := make(chan struct{}, 1)
 	slow := func(ctx context.Context, o wruntime.MessageDialogOptions) (string, error) {
+		up <- struct{}{}
 		<-release
 		return d.show(ctx, o)
 	}
 	_, ch, c := startWithChild(t, slow)
 	ask(t, c, 3, guiReq)
+	<-up // the dialog is showing
 	if err := c.Send(ipc.Msg{T: ipc.TConfirmCancel, ID: 3}); err != nil {
 		t.Fatal(err)
 	}

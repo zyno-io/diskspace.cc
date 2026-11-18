@@ -26,10 +26,13 @@ that request there**, through a channel web content can't drive:
   Lines typed before the prompt could be read are ignored.
 - **Desktop app:** a native dialog (the app's own "Open here" viewer gets the same dialog; the
   page has no way to answer it). Large permanent deletions get a second "can't be undone" dialog.
+  An approval given within a second of a dialog appearing (a stray keystroke) is asked again.
 - **No terminal** (for example `--quiet` under a service manager): deletion is unavailable.
 
-The viewer never confirms on its own; its deletion queue is only a review step. What the prompt
-shows is resolved and measured by the agent: the viewer names scanned entries only by scan id
+The viewer never confirms on its own; its deletion queue is only a review step. The terminal
+prompt lists every item; the dialog lists the 15 largest and the folder of every item, so a
+request can't tuck an extra item out of sight. What the prompt shows is resolved and measured by
+the agent: the viewer names scanned entries only by scan id
 (plus a file name inside a scanned folder), never by path or size. Names are shown with control,
 bidi and invisible characters escaped, so a file name can't fake prompt lines or reorder a path.
 The prompt also shows the requesting browser's verification code and whether it connected through
@@ -45,8 +48,8 @@ parent without following links and must still be the entry that was scanned (dev
 ID), inside the scan root and `--root`. It refuses mount points, reparse points, the scan root and
 protected folders (`/`, system folders, every home folder and the standard folders directly in a
 home, volume roots, and their ancestors; their contents can be deleted), never leaves the
-target's filesystem, and moves to the Trash with no-replace renames. Every requested item is
-logged (a terminal line per item, or a notice in the app).
+target's filesystem, and moves to the Trash with no-replace renames. The CLI prints a line for
+every requested item of an approved request; the app shows a summary notice.
 
 Anyone holding the full link, including the `#` part, can see those names while the agent is
 running. If the agent runs as administrator, that covers every user's files. Treat the link like a

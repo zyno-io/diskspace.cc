@@ -282,7 +282,7 @@ func (a *Agent) activate(v *viewerConn, snd *sender) bool {
 		j.mu.Unlock()
 		if !terminal(st.State) {
 			if b, err := proto.EncodeMsg(proto.MsgDeleteStatus, st); err == nil {
-				snd.setDeleteStatus(b)
+				snd.setDeleteStatus(st.Job, b)
 			}
 		}
 	}

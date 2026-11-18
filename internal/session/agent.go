@@ -143,6 +143,7 @@ type Agent struct {
 	delSeq      uint64
 	delStrikes  int       // refused prompts this run
 	delCooldown time.Time // no new request before this
+	delClosed   bool      // Run is ending: no new jobs
 	delWG       sync.WaitGroup
 }
 

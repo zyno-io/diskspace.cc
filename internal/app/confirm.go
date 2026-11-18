@@ -64,6 +64,9 @@ func encodeConfirm(req session.ConfirmRequest) ([]byte, error) {
 
 // Confirm implements session.Config.Confirm.
 func (c *ipcConfirmer) Confirm(ctx context.Context, req session.ConfirmRequest) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err // withdrawn before it was asked
+	}
 	b, err := encodeConfirm(req)
 	if err != nil {
 		return false, err

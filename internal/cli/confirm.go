@@ -101,6 +101,8 @@ func (c *Confirmer) readLoop(in io.Reader, injected bool) {
 			return
 		case errors.Is(err, io.EOF):
 			c.offer(ttyLine{eof: true, at: at}) // Ctrl-D: decline
+			// a closed terminal reads EOF forever: don't spin
+			time.Sleep(200 * time.Millisecond)
 		default:
 			// e.g. EIO while running in the background: nobody can answer;
 			// the prompt times out.
@@ -285,6 +287,10 @@ func RenderConfirm(req session.ConfirmRequest) string {
 	if req.More > 0 {
 		fmt.Fprintf(&b, "  … and %d more\n", req.More)
 	}
+	if len(req.Items) > 15 || req.More > 0 {
+		b.WriteString("In these folders:\n")
+		b.WriteString(RenderFolders(req))
+	}
 	fmt.Fprintf(&b, "Total: %s%s in %s and %s",
 		atLeast(req.AtLeast), FormatBytes(req.Alloc), plural(req.Files, "file", "files"), plural(req.Dirs, "folder", "folders"))
 	if req.AtLeast {
@@ -300,6 +306,18 @@ func RenderConfirm(req session.ConfirmRequest) string {
 	}
 	fmt.Fprintf(&b, "Requested by the browser showing the code %s, connected %s.\n", req.Code, via)
 	b.WriteString("If that isn't you, or you didn't ask for this, decline.\n")
+	return b.String()
+}
+
+// RenderFolders lists the folders that hold the items.
+func RenderFolders(req session.ConfirmRequest) string {
+	var b strings.Builder
+	for _, f := range req.Folders {
+		fmt.Fprintf(&b, "  %10s  %s  (%s)\n", FormatBytes(f.Alloc), f.Path, plural(uint64(f.Count), "item", "items"))
+	}
+	if req.MoreFolders > 0 {
+		fmt.Fprintf(&b, "  … and %d more folders\n", req.MoreFolders)
+	}
 	return b.String()
 }
 

@@ -129,6 +129,23 @@ func TestIPCConfirmRoundTrip(t *testing.T) {
 	<-got
 }
 
+// A request withdrawn before it was sent is never asked.
+func TestIPCConfirmAlreadyWithdrawn(t *testing.T) {
+	parent, child := ipcPair(t)
+	got := make(chan ipc.Msg, 1)
+	pump(parent, func(m ipc.Msg) { got <- m })
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if ok, err := newIPCConfirmer(child).Confirm(ctx, sampleReq); ok || !errors.Is(err, context.Canceled) {
+		t.Fatalf("got %v %v", ok, err)
+	}
+	select {
+	case m := <-got:
+		t.Fatalf("parent was asked: %+v", m)
+	case <-time.After(200 * time.Millisecond):
+	}
+}
+
 // A deadline on the child side is reported as a timeout.
 func TestIPCConfirmDeadline(t *testing.T) {
 	parent, child := ipcPair(t)

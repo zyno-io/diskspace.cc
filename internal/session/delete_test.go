@@ -189,6 +189,9 @@ func TestDeleteApproved(t *testing.T) {
 	if req.Items[0].Files != 2 || req.Items[0].Dirs != 1 || req.Alloc == 0 || req.Files != 3 {
 		t.Fatalf("measured %+v", req)
 	}
+	if len(req.Folders) != 1 || req.Folders[0].Count != 2 || req.Folders[0].Path != tree {
+		t.Fatalf("folders %+v", req.Folders)
+	}
 	fc.ans <- true
 	done := v.expectStatus(proto.DelDone)
 	if done.Job != st.Job || len(done.Results) != 3 {
@@ -216,8 +219,8 @@ func TestDeleteApproved(t *testing.T) {
 		t.Fatal("deleted too much")
 	}
 	e.rec.wait(t, EvDeleteDone, 5*time.Second)
-	if n := e.rec.count(EvDeleteItem); n != 2 {
-		t.Fatalf("%d audit events, want 2", n)
+	if n := e.rec.count(EvDeleteItem); n != 3 { // every requested item, the nested one too
+		t.Fatalf("%d audit events, want 3", n)
 	}
 }
 
@@ -613,6 +616,24 @@ func TestDeleteReqWithoutCaps(t *testing.T) {
 		if typ == proto.MsgDeleteStatus {
 			t.Fatal("DELETE_STATUS sent to a viewer without caps.del")
 		}
+	}
+}
+
+// A terminal status for one job doesn't drop another job's pending status.
+func TestDeleteStatusSlotPerJob(t *testing.T) {
+	s := newSender(nil, nil, nil)
+	s.del = true
+	s.setDeleteStatus(1, []byte("a"))
+	s.pushDeleteFinal(2, []byte("b"))
+	if string(s.delStatus) != "a" {
+		t.Fatal("job 1's status was dropped by job 2's refusal")
+	}
+	s.pushDeleteFinal(1, []byte("c"))
+	if s.delStatus != nil {
+		t.Fatal("job 1's stale status survived its final one")
+	}
+	if len(s.ctrl) != 2 || string(s.ctrl[1]) != "c" {
+		t.Fatalf("ctrl %q", s.ctrl)
 	}
 }
 

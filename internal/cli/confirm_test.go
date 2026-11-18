@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"sync"
@@ -235,6 +236,21 @@ func TestConfirmHoldsStatusLine(t *testing.T) {
 	result(t, okc, errc)
 	if !strings.Contains(out.String(), "while asking") {
 		t.Fatal("held line lost")
+	}
+}
+
+func TestRenderConfirmListsEveryItemAndFolders(t *testing.T) {
+	r := trashReq
+	r.Items = nil
+	for i := 0; i < 20; i++ {
+		r.Items = append(r.Items, session.ConfirmItem{Path: fmt.Sprintf("/Users/me/Caches/item%02d", i), Alloc: 1000})
+	}
+	r.Folders = []session.ConfirmFolder{{Path: "/Users/me/Caches", Count: 19, Alloc: 19000}, {Path: "/Users/me/Documents", Count: 1, Alloc: 1000}}
+	s := RenderConfirm(r)
+	for _, want := range []string{"item00", "item19", "In these folders:", "/Users/me/Documents  (1 item)"} {
+		if !strings.Contains(s, want) {
+			t.Errorf("lacks %q:\n%s", want, s)
+		}
 	}
 }
 

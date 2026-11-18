@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -35,8 +36,8 @@ var (
 )
 
 const (
-	maxConfirmItems = 15  // paths listed in a prompt
-	maxShownPath    = 512 // bytes of one path in a prompt
+	maxConfirmFolders = 40  // parent folders listed in a prompt
+	maxShownPath      = 512 // bytes of one path in a prompt
 	// LargeBytes and LargeFiles: a permanent deletion above either needs a
 	// second confirmation on the host.
 	LargeBytes = 100e9
@@ -62,21 +63,32 @@ var (
 // approve. Every string is display-safe (SafeText) and every size was
 // measured by the agent, never taken from the viewer.
 type ConfirmRequest struct {
-	Job      uint64        `json:"job"`
-	Mode     string        `json:"mode"`  // trash | permanent
-	Items    []ConfirmItem `json:"items"` // at most 15
-	More     int           `json:"more"`  // items not listed
-	Count    int           `json:"count"` // items that will be deleted
-	Skipped  int           `json:"skipped"`
-	Alloc    uint64        `json:"alloc"`
-	Files    uint64        `json:"files"`
-	Dirs     uint64        `json:"dirs"`
-	AtLeast  bool          `json:"atLeast"` // measuring stopped early: totals are lower bounds
-	Large    bool          `json:"large"`   // permanent and large: ask a second time
-	Warnings []string      `json:"warnings,omitempty"`
-	Code     string        `json:"code"`     // the requesting viewer's verification code
-	ViaRelay bool          `json:"viaRelay"` // the viewer is connected through the relay
-	Trash    string        `json:"trash"`    // "Trash" or "Recycle Bin"
+	Job   uint64        `json:"job"`
+	Mode  string        `json:"mode"`  // trash | permanent
+	Items []ConfirmItem `json:"items"` // every item, largest first
+	More  int           `json:"more"`  // items left out of Items (to fit an IPC message)
+	// Folders holds the parent folders of all items, largest first (at most
+	// 40; MoreFolders counts the rest).
+	Folders     []ConfirmFolder `json:"folders"`
+	MoreFolders int             `json:"moreFolders"`
+	Count       int             `json:"count"` // items that will be deleted
+	Skipped     int             `json:"skipped"`
+	Alloc       uint64          `json:"alloc"`
+	Files       uint64          `json:"files"`
+	Dirs        uint64          `json:"dirs"`
+	AtLeast     bool            `json:"atLeast"` // measuring stopped early: totals are lower bounds
+	Large       bool            `json:"large"`   // permanent and large: ask a second time
+	Warnings    []string        `json:"warnings,omitempty"`
+	Code        string          `json:"code"`     // the requesting viewer's verification code
+	ViaRelay    bool            `json:"viaRelay"` // the viewer is connected through the relay
+	Trash       string          `json:"trash"`    // "Trash" or "Recycle Bin"
+}
+
+// ConfirmFolder is a folder that holds Count of the items.
+type ConfirmFolder struct {
+	Path  string `json:"path"`
+	Count int    `json:"count"`
+	Alloc uint64 `json:"alloc"`
 }
 
 // ConfirmItem is one listed path.
@@ -259,9 +271,9 @@ func (a *Agent) sendStatusTo(from *viewerConn, st proto.DeleteStatus) {
 	a.mu.Unlock()
 	for _, s := range targets {
 		if terminal(st.State) {
-			s.pushDeleteFinal(body)
+			s.pushDeleteFinal(st.Job, body)
 		} else {
-			s.setDeleteStatus(body)
+			s.setDeleteStatus(st.Job, body)
 		}
 	}
 }
@@ -339,10 +351,15 @@ func (a *Agent) requestDelete(v *viewerConn, m proto.DeleteReq) {
 	j := &delJob{a: a, id: id, reqID: m.ReqID, mode: mode, from: v, run: run, items: items, state: proto.DelPreparing}
 	j.pctx, j.pcancel = context.WithCancelCause(v.ctx)
 	a.mu.Lock()
+	if a.delClosed { // shutting down
+		a.mu.Unlock()
+		j.pcancel(nil)
+		return
+	}
 	a.del = j
+	a.delWG.Add(1) // under a.mu: never after waitDeletes started waiting
 	a.mu.Unlock()
 	a.sendDelStatus(j)
-	a.delWG.Add(1)
 	go a.runJob(j)
 }
 
@@ -469,49 +486,20 @@ func (a *Agent) runJob(j *delJob) {
 // preflight budget. It returns false if the request was withdrawn meanwhile.
 func (a *Agent) prepare(j *delJob, b scan.Bounds) bool {
 	sc, marks := j.run.scanner, &j.run.marks
-	// Items inside another requested folder go with it; duplicates too.
+	// Duplicates go with their first occurrence.
 	dirs := map[uint64]int{}
 	files := map[string]int{}
 	for _, it := range j.items {
+		key := fmt.Sprintf("f%d/%s", it.id, it.name)
 		if it.dir {
-			if k, dup := dirs[it.id]; dup {
-				it.cover = k
-			} else {
-				dirs[it.id] = it.i
-			}
+			key = fmt.Sprintf("d%d", it.id)
+		}
+		if k, dup := files[key]; dup {
+			it.cover = k
 		} else {
-			key := fmt.Sprintf("%d/%s", it.id, it.name)
-			if k, dup := files[key]; dup {
-				it.cover = k
-			} else {
-				files[key] = it.i
-			}
+			files[key] = it.i
 		}
 	}
-	for _, it := range j.items {
-		if it.cover >= 0 {
-			continue
-		}
-		p, ok := it.id, !it.dir
-		if it.dir {
-			p, ok = sc.ParentOf(it.id)
-		}
-		for n := 0; ok && n <= 4096; n++ {
-			if k, hit := dirs[p]; hit && k != it.i {
-				it.cover = k
-				break
-			}
-			p, ok = sc.ParentOf(p)
-		}
-	}
-	// A covering item may itself be covered: point at the outermost.
-	for _, it := range j.items {
-		for n := 0; it.cover >= 0 && j.items[it.cover].cover >= 0 && n < len(j.items); n++ {
-			it.cover = j.items[it.cover].cover
-		}
-	}
-
-	deadline := time.Now().Add(preflightBudget)
 	for _, it := range j.items {
 		if j.pctx.Err() != nil {
 			return false
@@ -544,17 +532,62 @@ func (a *Agent) prepare(j *delJob, b scan.Bounds) bool {
 			it.code, it.msg = itemCode(scan.ErrorCode(err)), errText(err)
 			continue
 		}
-		if it.code != "" {
+		if it.code == "" {
+			it.ready = true
+			if it.dir {
+				dirs[it.id] = it.i
+			}
+		}
+	}
+	// Items inside another requested folder that can be deleted go with it.
+	for _, it := range j.items {
+		if it.cover >= 0 {
 			continue
 		}
-		it.ready = true
-		if !it.dir {
+		p, ok := it.id, !it.dir
+		if it.dir {
+			p, ok = sc.ParentOf(it.id)
+		}
+		for n := 0; ok && n <= 4096; n++ {
+			if k, hit := dirs[p]; hit && k != it.i {
+				it.cover = k
+				break
+			}
+			p, ok = sc.ParentOf(p)
+		}
+	}
+	// A covering item may itself be covered: point at the outermost.
+	for _, it := range j.items {
+		for n := 0; it.cover >= 0 && j.items[it.cover].cover >= 0 && n < len(j.items); n++ {
+			it.cover = j.items[it.cover].cover
+		}
+	}
+	deadline := time.Now().Add(preflightBudget)
+	for _, it := range j.items {
+		if j.pctx.Err() != nil {
+			return false
+		}
+		switch {
+		case it.cover >= 0 || !it.ready:
+		case it.dir:
+			it.pre = measure(j.pctx, it.target, deadline)
+		default:
 			it.pre = preflight{alloc: it.target.Alloc, apparent: it.target.Apparent, files: 1}
-			continue
 		}
-		it.pre = measure(j.pctx, it.target, deadline)
 	}
 	return j.pctx.Err() == nil
+}
+
+// displayPath is an item's path for the audit trail (resolved when possible).
+func (it *delItem) displayPath(sc *scan.Scanner) string {
+	if it.ready {
+		return SafeText(it.target.Path, 4096)
+	}
+	p, _ := sc.PathOf(it.id)
+	if !it.dir {
+		p = filepath.Join(p, it.name)
+	}
+	return SafeText(p, 4096)
 }
 
 func knownDir(sc *scan.Scanner, id uint64) bool {
@@ -606,6 +639,8 @@ func (a *Agent) confirmRequest(j *delJob) ConfirmRequest {
 	}
 	var mounts, denied uint64
 	var cloud bool
+	var folders []ConfirmFolder
+	folderIdx := map[string]int{}
 	for _, it := range j.items {
 		switch {
 		case it.cover >= 0:
@@ -626,17 +661,35 @@ func (a *Agent) confirmRequest(j *delJob) ConfirmRequest {
 		mounts += p.mounts
 		denied += p.denied
 		cloud = cloud || p.cloud
-		if len(req.Items) < maxConfirmItems {
-			req.Items = append(req.Items, ConfirmItem{
-				Path: SafeText(it.target.Path, maxShownPath), Dir: it.dir,
-				Alloc: p.alloc, Files: p.files, Dirs: p.dirs, AtLeast: p.atLeast,
-			})
-		} else {
-			req.More++
+		// every item is listed (the terminal shows them all; a dialog shows
+		// the largest and the folders below), so the request order can't
+		// push one out of sight
+		req.Items = append(req.Items, ConfirmItem{
+			Path: SafeText(it.target.Path, maxShownPath), Dir: it.dir,
+			Alloc: p.alloc, Files: p.files, Dirs: p.dirs, AtLeast: p.atLeast,
+		})
+		fp := filepath.Dir(it.target.Path)
+		k, ok := folderIdx[fp]
+		if !ok {
+			k = len(folders)
+			folderIdx[fp] = k
+			folders = append(folders, ConfirmFolder{Path: SafeText(fp, maxShownPath)})
+		}
+		folders[k].Count++
+		folders[k].Alloc += p.alloc
+	}
+	sort.SliceStable(req.Items, func(a, b int) bool { return req.Items[a].Alloc > req.Items[b].Alloc })
+	sort.SliceStable(folders, func(a, b int) bool { return folders[a].Alloc > folders[b].Alloc })
+	if len(folders) > maxConfirmFolders {
+		req.MoreFolders = len(folders) - maxConfirmFolders
+		folders = folders[:maxConfirmFolders]
+		if j.mode == scan.ModePermanent {
+			req.Large = true // too spread out to show: ask twice
 		}
 	}
+	req.Folders = folders
 	if j.mode == scan.ModePermanent {
-		req.Large = req.Alloc > LargeBytes || req.Files > LargeFiles || req.AtLeast
+		req.Large = req.Large || req.Alloc > LargeBytes || req.Files > LargeFiles || req.AtLeast
 	}
 	if req.Skipped > 0 {
 		req.Warnings = append(req.Warnings, fmt.Sprintf("%d of the requested items can't be deleted and will be left alone.", req.Skipped))
@@ -704,10 +757,12 @@ func (a *Agent) execute(j *delJob, req ConfirmRequest) {
 		}
 		if !it.ready {
 			r.Code, r.Message = it.code, it.msg
+			a.emit(Event{Kind: EvDeleteItem, Path: it.displayPath(j.run.scanner), Message: auditText(j, r)})
 			continue
 		}
 		if j.stop.Load() || jctx.Err() != nil {
 			r.Code = "canceled"
+			a.emit(Event{Kind: EvDeleteItem, Path: it.displayPath(j.run.scanner), Message: auditText(j, r)})
 			continue
 		}
 		live := &scan.Counters{}
@@ -779,6 +834,8 @@ func (a *Agent) execute(j *delJob, req ConfirmRequest) {
 		if it.cover >= 0 {
 			c := results[it.cover]
 			results[it.i] = proto.DeleteResult{I: it.i, OK: c.OK, Code: c.Code, Message: c.Message}
+			a.emit(Event{Kind: EvDeleteItem, Path: it.displayPath(j.run.scanner),
+				Message: "requested again or inside " + j.items[it.cover].displayPath(j.run.scanner) + " (same outcome)"})
 		}
 	}
 	close(stopTick)
@@ -926,6 +983,9 @@ func doneText(j *delJob, ok, ran int, freed uint64) string {
 // waitDeletes waits (bounded) for a running deletion to stop after the agent
 // was told to quit.
 func (a *Agent) waitDeletes(d time.Duration) {
+	a.mu.Lock()
+	a.delClosed = true
+	a.mu.Unlock()
 	done := make(chan struct{})
 	go func() { a.delWG.Wait(); close(done) }()
 	select {

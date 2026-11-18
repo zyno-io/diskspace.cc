@@ -8,6 +8,7 @@ import (
 	"fmt"
 	goruntime "runtime"
 	"strings"
+	"time"
 
 	wruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 
@@ -20,6 +21,9 @@ import (
 // deletion asked for by any browser, the app's own "Open here" view
 // included, is approved in a native dialog: web content can't click it.
 // Nothing here is reachable from the page (no bound method approves).
+
+// maxDialogItems is how many paths a dialog lists (the largest).
+const maxDialogItems = 15
 
 // dialogFunc shows a native message dialog and returns the chosen button.
 type dialogFunc func(ctx context.Context, o wruntime.MessageDialogOptions) (string, error)
@@ -34,6 +38,10 @@ func wailsDialog(ctx context.Context, o wruntime.MessageDialogOptions) (string, 
 // askOptions builds the dialog: Yes/No on Windows (MessageBox can't name its
 // buttons) and Linux, named buttons on macOS. Cancel / No is the default.
 func askOptions(goos, title, message, yes string) (wruntime.MessageDialogOptions, func(string) bool) {
+	if goos == "linux" {
+		// GTK takes the message as a printf format
+		message = strings.ReplaceAll(message, "%", "%%")
+	}
 	if goos == "darwin" {
 		return wruntime.MessageDialogOptions{
 			Type: wruntime.QuestionDialog, Title: title, Message: message,
@@ -64,15 +72,26 @@ func confirmText(req session.ConfirmRequest) string {
 	} else {
 		fmt.Fprintf(&b, "A browser asks to move %s to the %s.\n\n", items, req.Trash)
 	}
-	for _, it := range req.Items {
+	shown := req.Items
+	if len(shown) > maxDialogItems {
+		shown = shown[:maxDialogItems] // the largest
+	}
+	for _, it := range shown {
 		size := cli.FormatBytes(it.Alloc)
 		if it.AtLeast {
 			size = "≥" + size
 		}
 		fmt.Fprintf(&b, "%s  (%s)\n", it.Path, size)
 	}
-	if req.More > 0 {
-		fmt.Fprintf(&b, "… and %d more\n", req.More)
+	if more := len(req.Items) - len(shown) + req.More; more > 0 {
+		// every item's folder is named, so nothing can hide behind "more"
+		fmt.Fprintf(&b, "… and %d more. All %d items are in these folders:\n", more, req.Count)
+		for _, f := range req.Folders {
+			fmt.Fprintf(&b, "%s  (%d, %s)\n", f.Path, f.Count, cli.FormatBytes(f.Alloc))
+		}
+		if req.MoreFolders > 0 {
+			fmt.Fprintf(&b, "… and %d more folders\n", req.MoreFolders)
+		}
 	}
 	at := ""
 	if req.AtLeast {
@@ -98,8 +117,8 @@ func (a *App) askDelete(ctx context.Context, req session.ConfirmRequest) bool {
 		title, yes = "Delete permanently?", "Delete"
 	}
 	o, approved := askOptions(goruntime.GOOS, title, confirmText(req), yes)
-	r, err := a.dialog(ctx, o)
-	if err != nil || !approved(r) {
+	ok, err := a.deliberate(ctx, o, approved)
+	if err != nil || !ok {
 		return false
 	}
 	if !req.Large {
@@ -116,8 +135,29 @@ func (a *App) askDelete(ctx context.Context, req session.ConfirmRequest) bool {
 	if goruntime.GOOS != "darwin" {
 		o.Type = wruntime.QuestionDialog // Windows' warning dialog has only OK
 	}
-	r, err = a.dialog(ctx, o)
-	return err == nil && approved(r)
+	ok, err = a.deliberate(ctx, o, approved)
+	return err == nil && ok
+}
+
+// deliberate shows a dialog and reports approval. An approval given sooner
+// than dialogMinReact after the dialog appeared (a keystroke meant for the
+// window: MessageBox answers Y without Enter) is not taken: the dialog is
+// shown again, and a third hasty answer declines.
+func (a *App) deliberate(ctx context.Context, o wruntime.MessageDialogOptions, approved func(string) bool) (bool, error) {
+	a.mu.Lock()
+	minReact := a.dialogMinReact
+	a.mu.Unlock()
+	for try := 0; try < 3; try++ {
+		start := time.Now()
+		r, err := a.dialog(ctx, o)
+		if err != nil || !approved(r) {
+			return false, err
+		}
+		if time.Since(start) >= minReact {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // confirm answers one TConfirm from the agent (in its own goroutine: the IPC
@@ -125,6 +165,9 @@ func (a *App) askDelete(ctx context.Context, req session.ConfirmRequest) bool {
 func (a *App) confirm(p *proc, m ipc.Msg) {
 	a.dialogMu.Lock() // one dialog at a time
 	defer a.dialogMu.Unlock()
+	if p.withdrawn(m.ID) {
+		return // withdrawn while waiting for an earlier dialog: never shown
+	}
 	reply := ipc.Msg{T: ipc.TConfirmReply, ID: m.ID, State: "declined"}
 	var req session.ConfirmRequest
 	ctx := a.wailsCtx()

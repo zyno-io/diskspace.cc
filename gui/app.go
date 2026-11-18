@@ -10,6 +10,7 @@ import (
 	goruntime "runtime"
 	"strings"
 	"sync"
+	"time"
 
 	wruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 
@@ -64,6 +65,8 @@ type App struct {
 	spawn   launchFunc
 	emitFn  func(Snapshot)
 	dialog  dialogFunc
+	// dialogMinReact: approvals faster than this are asked again
+	dialogMinReact time.Duration
 
 	dialogMu sync.Mutex // one deletion dialog at a time
 
@@ -103,6 +106,8 @@ func newApp(version, defaultRelay string) (*App, error) {
 		cfgPath: cfgPath,
 		spawn:   defaultLaunch,
 		dialog:  wailsDialog,
+
+		dialogMinReact: time.Second,
 
 		guiElevated: elevate.IsElevated(),
 	}
