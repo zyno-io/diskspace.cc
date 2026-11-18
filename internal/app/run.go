@@ -107,7 +107,7 @@ func runCLI(o *Options, version string, stdout, stderr io.Writer) int {
 
 	// Elevation, before any network or session activity.
 	if !elevate.IsElevated() && !o.NoElevate {
-		if code, done := maybeElevate(o, self, stderr); done {
+		if code, done := maybeElevate(o, version, self, stderr); done {
 			return code
 		}
 	}
@@ -178,7 +178,7 @@ func announceUpdate(rend *cli.Renderer, relay, version string) {
 
 // maybeElevate implements the elevation flow. done=true means the process
 // should exit with code (Unix never returns on success: sudo replaces it).
-func maybeElevate(o *Options, self string, stderr io.Writer) (code int, done bool) {
+func maybeElevate(o *Options, version, self string, stderr io.Writer) (code int, done bool) {
 	want := o.Elevate
 	if !want {
 		if !elevate.HasTTY() {
@@ -202,7 +202,7 @@ func maybeElevate(o *Options, self string, stderr io.Writer) (code int, done boo
 		return 0, false
 	}
 	if runtime.GOOS == "windows" {
-		return elevateWindows(o, self, stderr, fail)
+		return elevateWindows(o, version, self, stderr, fail)
 	}
 	if err := elevate.SudoValidate(); err != nil && !errors.Is(err, elevate.ErrNoTTY) {
 		return fail("could not get administrator access: " + err.Error())
