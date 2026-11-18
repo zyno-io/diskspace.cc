@@ -185,91 +185,115 @@ func readDirEntries(path string, want Identity, sc *readScratch, fn func(*rawEnt
 		self.Alloc, self.Apparent = uint64(si.AllocationSize), uint64(si.EndOfFile)
 	}
 
+	var en dirEnum
+	for restart := true; ; restart = false {
+		end, err := en.batch(h, self.Dev, sc, restart, fn)
+		if err != nil {
+			return self, err
+		}
+		if end {
+			return self, nil
+		}
+	}
+}
+
+// dirEnum enumerates an open directory handle one buffer at a time.
+type dirEnum struct {
+	fallback bool // FileIdExtdDirectoryInfo unsupported: use FileIdBothDirectoryInfo
+}
+
+// batch reads one buffer of entries (from the start when restart is set) and
+// calls fn for each, excluding "." and "..". end is set at the end of the
+// directory or when fn returned false.
+func (d *dirEnum) batch(h windows.Handle, dev uint64, sc *readScratch, restart bool, fn func(*rawEntry) bool) (end bool, err error) {
 	if sc.buf == nil {
 		sc.buf = make([]uint64, 64<<10/8)
 	}
 	bufp := (*byte)(unsafe.Pointer(&sc.buf[0]))
 	bufLen := uint32(len(sc.buf) * 8)
-	class := uint32(classIDExtdDirRestartInfo)
-	fallback, first := false, true
 	for {
-		err := windows.GetFileInformationByHandleEx(h, class, bufp, bufLen)
-		if err != nil {
-			if errors.Is(err, windows.ERROR_NO_MORE_FILES) {
-				return self, nil
-			}
-			if first && !fallback && errors.Is(err, windows.ERROR_INVALID_PARAMETER) {
-				fallback = true
-				class = classIDBothDirRestartInfo
-				continue
-			}
-			return self, err
-		}
-		first = false
-		if fallback {
+		var class uint32
+		switch {
+		case d.fallback && restart:
+			class = classIDBothDirRestartInfo
+		case d.fallback:
 			class = classIDBothDirInfo
-		} else {
+		case restart:
+			class = classIDExtdDirRestartInfo
+		default:
 			class = classIDExtdDirInfo
 		}
-		base := unsafe.Pointer(bufp)
-		var off uintptr
-		for {
-			p := unsafe.Add(base, off)
-			next := *(*uint32)(p)
-			var (
-				eof     = *(*int64)(unsafe.Add(p, 40))
-				alloc   = *(*int64)(unsafe.Add(p, 48))
-				attrs   = *(*uint32)(unsafe.Add(p, 56))
-				nameLen = *(*uint32)(unsafe.Add(p, 60))
-				tag     = *(*uint32)(unsafe.Add(p, 64)) // EaSize: reparse tag for reparse points (fallback)
-				idLo    uint64
-				idHi    uint64
-				nameOff uintptr
-			)
-			if fallback {
-				idLo = *(*uint64)(unsafe.Add(p, 96))
-				nameOff = 104
-			} else {
-				tag = *(*uint32)(unsafe.Add(p, 68))
-				idLo = *(*uint64)(unsafe.Add(p, 72))
-				idHi = *(*uint64)(unsafe.Add(p, 80))
-				nameOff = 88
-			}
-			name := unsafe.Slice((*uint16)(unsafe.Add(p, nameOff)), nameLen/2)
-			if !(len(name) == 1 && name[0] == '.') && !(len(name) == 2 && name[0] == '.' && name[1] == '.') {
-				var e rawEntry
-				e.Name = utf16ToWTF8(name)
-				e.Dev = self.Dev
-				reparse := attrs&attrReparse != 0
-				if attrs&attrDirectory != 0 {
-					e.Kind = kindDir
-					e.Ino = mixID(idLo, idHi)
-					e.ID = Identity{Dev: self.Dev, Ino: idLo, Ino2: idHi}
-					if reparse && tag&reparseNameSurrogate != 0 {
-						e.ChildFlags = proto.ChildReparse
-					}
-				} else {
-					e.Alloc, e.Apparent = uint64(alloc), uint64(eof)
-					e.Ino = mixID(idLo, idHi)
-					e.Dedup = idLo != 0 || idHi != 0
-					if reparse && tag == reparseTagSymlink {
-						e.Flags |= proto.FileSymlink
-					}
-					if attrs&attrSparse != 0 {
-						e.Flags |= proto.FileSparse
-					}
-					if attrs&(attrOffline|attrRecallOnOpen|attrRecallOnDataAccess) != 0 {
-						e.Flags |= proto.FileCloud
-					}
-				}
-				if !fn(&e) {
-					return self, nil
-				}
-			}
-			if next == 0 {
-				break
-			}
-			off += uintptr(next)
+		err := windows.GetFileInformationByHandleEx(h, class, bufp, bufLen)
+		if err == nil {
+			break
 		}
+		if errors.Is(err, windows.ERROR_NO_MORE_FILES) {
+			return true, nil
+		}
+		if restart && !d.fallback && errors.Is(err, windows.ERROR_INVALID_PARAMETER) {
+			d.fallback = true
+			continue
+		}
+		return false, err
+	}
+	base := unsafe.Pointer(bufp)
+	var off uintptr
+	for {
+		p := unsafe.Add(base, off)
+		next := *(*uint32)(p)
+		var (
+			eof     = *(*int64)(unsafe.Add(p, 40))
+			alloc   = *(*int64)(unsafe.Add(p, 48))
+			attrs   = *(*uint32)(unsafe.Add(p, 56))
+			nameLen = *(*uint32)(unsafe.Add(p, 60))
+			tag     = *(*uint32)(unsafe.Add(p, 64)) // EaSize: reparse tag for reparse points (fallback)
+			idLo    uint64
+			idHi    uint64
+			nameOff uintptr
+		)
+		if d.fallback {
+			idLo = *(*uint64)(unsafe.Add(p, 96))
+			nameOff = 104
+		} else {
+			tag = *(*uint32)(unsafe.Add(p, 68))
+			idLo = *(*uint64)(unsafe.Add(p, 72))
+			idHi = *(*uint64)(unsafe.Add(p, 80))
+			nameOff = 88
+		}
+		name := unsafe.Slice((*uint16)(unsafe.Add(p, nameOff)), nameLen/2)
+		if !(len(name) == 1 && name[0] == '.') && !(len(name) == 2 && name[0] == '.' && name[1] == '.') {
+			var e rawEntry
+			e.Name = utf16ToWTF8(name)
+			e.Dev = dev
+			reparse := attrs&attrReparse != 0
+			if attrs&attrDirectory != 0 {
+				e.Kind = kindDir
+				e.Ino = mixID(idLo, idHi)
+				e.ID = Identity{Dev: dev, Ino: idLo, Ino2: idHi}
+				if reparse && tag&reparseNameSurrogate != 0 {
+					e.ChildFlags = proto.ChildReparse
+				}
+			} else {
+				e.Alloc, e.Apparent = uint64(alloc), uint64(eof)
+				e.Ino = mixID(idLo, idHi)
+				e.Dedup = idLo != 0 || idHi != 0
+				if reparse && tag == reparseTagSymlink {
+					e.Flags |= proto.FileSymlink
+				}
+				if attrs&attrSparse != 0 {
+					e.Flags |= proto.FileSparse
+				}
+				if attrs&(attrOffline|attrRecallOnOpen|attrRecallOnDataAccess) != 0 {
+					e.Flags |= proto.FileCloud
+				}
+			}
+			if !fn(&e) {
+				return true, nil
+			}
+		}
+		if next == 0 {
+			return false, nil
+		}
+		off += uintptr(next)
 	}
 }
