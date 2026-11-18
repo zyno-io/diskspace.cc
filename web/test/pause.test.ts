@@ -20,6 +20,8 @@ class FakeSession implements Session {
   scanStart() {}
   scanCancel(id: number) { this.cancels.push(id); }
   scanPause(id: number, p: boolean) { this.pauses.push([id, p]); }
+  deleteRequest() {}
+  deleteCancel() {}
   browse() { return Promise.reject(new Error("n/a")); }
   dirFiles() { return Promise.reject(new Error("n/a")); }
   applied() {}

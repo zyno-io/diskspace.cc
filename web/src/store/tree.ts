@@ -7,7 +7,7 @@
 // Every DIR/FOLD record adds its own bytes to all ancestors (O(depth)), so
 // totals are always consistent with what has arrived so far.
 
-import type { ChildRec, DirFiles, DirMoreRec, DirRec, FileRec, FoldEndRec, FoldRec, NodeBatch, NodeRecord, ScanStarted } from "../protocol/types";
+import type { ChildRec, Deleted, DirFiles, DirMoreRec, DirRec, FileRec, FoldEndRec, FoldRec, NodeBatch, NodeRecord, ScanStarted } from "../protocol/types";
 import { MAX_CHILD_DIRS } from "../protocol/codec";
 import { DIR_FLAG, FILE_FLAG } from "../protocol/types";
 
@@ -16,6 +16,8 @@ export const KIND_DIR = 1;
 export const KIND_FILE = 2;
 export const KIND_BUCKET = 3;
 export const KIND_SYNTH = 4;
+/** tombstone: a dir or file the agent deleted (unlike KIND_NONE, never a placeholder for apply()) */
+export const KIND_DELETED = 5;
 
 export const SYNTH_NAME = "Other volumes, snapshots & unreadable";
 
@@ -24,6 +26,8 @@ export const CHILD_SHIFT = 8;
 export const FILE_SHIFT = 16;
 /** set once the dir's own DIR record has been applied */
 export const F_RECORD = 1 << 24;
+/** a dir the agent only partly deleted: its totals no longer match its children ("scan again") */
+export const F_STALE = 1 << 25;
 
 const INITIAL = 1 << 12;
 
@@ -75,6 +79,8 @@ export class TreeStore {
   rootPath = "";
   /** dirs whose DIR record says READ_DENIED */
   deniedDirs = 0;
+  /** DELETED items already applied (job + item), so a redelivered message is a no-op */
+  private tombstones = new Set<string>();
 
   constructor() {
     this.grow(INITIAL);
@@ -92,6 +98,7 @@ export class TreeStore {
     this.rootPath = m.path;
     this.synth = -1;
     this.deniedDirs = 0;
+    this.tombstones.clear();
     const r = this.alloc(1);
     this.initNode(r, KIND_DIR, -1, m.rootName || m.path, 0);
     this.unsettled[r] = 1;
@@ -107,6 +114,7 @@ export class TreeStore {
     this.root = -1;
     this.scanId = -1;
     this.orphans.clear();
+    this.tombstones.clear();
     this.version++;
   }
 
@@ -338,6 +346,124 @@ export class TreeStore {
     }
   }
 
+  // ---- deletions ------------------------------------------------------------
+
+  /**
+   * Apply a DELETED message. Whole dirs and files become tombstones and their
+   * totals leave every ancestor; a partly deleted dir loses the agent's freed
+   * amounts (clamped) and is marked F_STALE. Idempotent per job and item.
+   * Returns true if anything changed.
+   */
+  applyDeleted(m: Deleted): boolean {
+    if (m.scanId !== this.scanId || this.root < 0) return false;
+    let changed = false;
+    for (const it of m.items) {
+      const key = "dir" in it ? `${m.job}|d:${it.dir}` : `${m.job}|f:${it.parent}:${it.name}`;
+      if (this.tombstones.has(key)) continue;
+      this.tombstones.add(key);
+      const ok =
+        "dir" in it
+          ? it.partial
+            ? this.removePartial(it.dir, it.freedAlloc, it.freedApparent, it.files, it.dirs)
+            : this.removeDir(it.dir)
+          : this.removeFile(it.parent, it.name, it.freedAlloc, it.freedApparent);
+      changed ||= ok;
+    }
+    if (changed) this.version++;
+    return changed;
+  }
+
+  /** internal index of a wire dir id, or -1 */
+  nodeOfWire(w: number): number {
+    return w >= 0 && w < this.wire2idx.length ? this.wire2idx[w] : -1;
+  }
+
+  /** a live listed file of dir `p` with this name, or -1 */
+  findFile(p: number, name: string): number {
+    const fs = this.fStart[p], fc = this.fCount[p];
+    for (let k = 0; k < fc; k++) if (this.kind[fs + k] === KIND_FILE && this.names[fs + k] === name) return fs + k;
+    return -1;
+  }
+
+  /** the node or one of its ancestors was deleted */
+  isRemoved(i: number): boolean {
+    for (let k = i; k >= 0; k = this.parent[k]) if (this.kind[k] === KIND_DELETED) return true;
+    return false;
+  }
+
+  /** nearest node on i's root path that is not deleted (i itself when it is live) */
+  survivor(i: number): number {
+    if (i < 0 || i >= this.n) return this.root;
+    let s = i;
+    for (let k = i; k >= 0; k = this.parent[k]) if (this.kind[k] === KIND_DELETED) s = this.parent[k];
+    return s < 0 ? this.root : s;
+  }
+
+  isStale(i: number): boolean {
+    return (this.flags[i] & F_STALE) !== 0;
+  }
+
+  /** a live scanned dir by wire id (not the root's own deletion target check) */
+  private liveDir(wire: number): number {
+    const idx = this.nodeOfWire(wire);
+    if (idx < 0 || this.kind[idx] !== KIND_DIR || this.isRemoved(idx)) return -1;
+    return idx;
+  }
+
+  private removeDir(wire: number): boolean {
+    const idx = this.liveDir(wire);
+    if (idx < 0 || idx === this.root) return false;
+    const p = this.parent[idx];
+    this.addUp(p, -this.totAlloc[idx], -this.totApparent[idx], -this.totFiles[idx], -(this.totDirs[idx] + 1));
+    if (this.unsettled[idx] > 0) {
+      // a stopped scan can leave it unsettled; it no longer holds its parent back
+      this.unsettled[idx] = 0;
+      this.settle(idx);
+    }
+    this.kind[idx] = KIND_DELETED;
+    this.touched[idx] = this.version + 1;
+    return true;
+  }
+
+  private removePartial(wire: number, alloc: number, apparent: number, files: number, dirs: number): boolean {
+    const idx = this.liveDir(wire);
+    if (idx < 0) return false;
+    const a = clamp(alloc, this.totAlloc[idx]);
+    const p = clamp(apparent, this.totApparent[idx]);
+    const f = clamp(files, this.totFiles[idx]);
+    const d = clamp(dirs, this.totDirs[idx]);
+    this.addUp(idx, -a, -p, -f, -d);
+    this.flags[idx] |= F_STALE;
+    return true;
+  }
+
+  private removeFile(parentWire: number, name: string, alloc: number, apparent: number): boolean {
+    const p = this.liveDir(parentWire);
+    if (p < 0) return false;
+    const fi = this.findFile(p, name);
+    let a: number, ap: number;
+    if (fi >= 0) {
+      // a listed file: its own recorded size leaves the parent (keeps the bucket unchanged)
+      a = this.ownAlloc[fi];
+      ap = this.ownApparent[fi];
+      this.listedAlloc[p] -= a;
+      this.listedApparent[p] -= ap;
+      this.listedCount[p] -= 1;
+      this.kind[fi] = KIND_DELETED;
+      this.touched[fi] = this.version + 1;
+    } else {
+      // not listed here (e.g. replay without the "show all" listing): shrink the bucket
+      a = clamp(alloc, this.ownAlloc[p] - this.listedAlloc[p]);
+      ap = clamp(apparent, this.ownApparent[p] - this.listedApparent[p]);
+      if (this.ownFiles[p] - this.listedCount[p] < 1) return false;
+    }
+    this.ownAlloc[p] -= a;
+    this.ownApparent[p] -= ap;
+    this.ownFiles[p] -= 1;
+    this.addUp(p, -a, -ap, -1, 0);
+    return true;
+  }
+
   // ---- synthetic remainder ------------------------------------------------
 
   /** "Other volumes, snapshots & unreadable" (volume-root scans only) */
@@ -381,7 +507,7 @@ export class TreeStore {
       const v = this.ownAlloc[p] - this.listedAlloc[p];
       return v > 0 ? v : 0;
     }
-    if (k === KIND_NONE) return 0;
+    if (k === KIND_NONE || k === KIND_DELETED) return 0;
     return this.totAlloc[i];
   }
   apparent(i: number): number {
@@ -390,6 +516,7 @@ export class TreeStore {
       const v = this.ownApparent[p] - this.listedApparent[p];
       return v > 0 ? v : 0;
     }
+    if (this.kind[i] === KIND_DELETED) return 0;
     return this.totApparent[i];
   }
   files(i: number): number {
@@ -550,4 +677,9 @@ export class TreeStore {
     this.touched = g(this.touched);
     this.cap = c;
   }
+}
+
+/** 0 ≤ v ≤ max (max < 0 counts as 0) */
+function clamp(v: number, max: number): number {
+  return v > 0 ? Math.min(v, Math.max(0, max)) : 0;
 }

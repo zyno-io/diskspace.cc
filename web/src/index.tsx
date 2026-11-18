@@ -59,6 +59,8 @@ function useDemo(host: { current: HTMLDivElement | null }, grid: { current: HTML
       scanEnded: () => undefined,
       scanState: () => undefined,
       replayDone: () => undefined,
+      deleteStatus: () => undefined,
+      deleted: () => undefined,
       bye: () => undefined,
       error: () => undefined,
     });

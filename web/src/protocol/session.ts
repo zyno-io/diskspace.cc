@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-import type { BrowseResult, DirFiles, ScanOptions, Session, SessionEvents } from "./types";
+import type { BrowseResult, DeleteReq, DirFiles, ScanOptions, Session, SessionEvents } from "./types";
 import type { WorkerCommand, WorkerEvent } from "./worker-protocol";
 
 export interface RealSessionOptions {
@@ -27,6 +27,10 @@ export class RealSession implements Session {
   private files = new Map<number, Pending<DirFiles>>();
 
   constructor(readonly opts: RealSessionOptions) {}
+
+  get id(): string {
+    return this.opts.sid;
+  }
 
   start(events: SessionEvents): void {
     if (this.worker) return;
@@ -74,6 +78,12 @@ export class RealSession implements Session {
         break;
       case "replayDone":
         ev.replayDone();
+        break;
+      case "deleteStatus":
+        ev.deleteStatus(e.v);
+        break;
+      case "deleted":
+        ev.deleted(e.v);
         break;
       case "bye":
         ev.bye(e.v);
@@ -133,6 +143,12 @@ export class RealSession implements Session {
   }
   scanPause(scanId: number, paused: boolean): void {
     this.send({ t: "scanPause", scanId, paused });
+  }
+  deleteRequest(req: DeleteReq): void {
+    this.send({ t: "deleteReq", req });
+  }
+  deleteCancel(job: number): void {
+    this.send({ t: "deleteCancel", job });
   }
   browse(path: string): Promise<BrowseResult> {
     return this.request(this.browses, (reqId) => ({ t: "browse", reqId, path }));

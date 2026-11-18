@@ -5,13 +5,14 @@
 // sized to the frame budget, so a fast scan cannot starve rendering or input.
 // A batch is reported applied (flow-control credit) only once fully applied.
 
-import type { NodeBatch, ScanDone, ScanEnded } from "../protocol/types";
+import type { Deleted, NodeBatch, ScanDone, ScanEnded } from "../protocol/types";
 
 export type IngestItem =
   | { k: "batch"; b: NodeBatch; from: number }
   | { k: "done"; m: ScanDone }
   | { k: "ended"; m: ScanEnded }
-  | { k: "replayDone" };
+  | { k: "replayDone" }
+  | { k: "deleted"; m: Deleted };
 
 export interface IngestHandlers {
   /** apply records [from, …) until `deadline`; return the resume index (=== length when finished) */
@@ -21,6 +22,8 @@ export interface IngestHandlers {
   done(m: ScanDone): void;
   ended(m: ScanEnded): void;
   replayDone(): void;
+  /** DELETED tombstones, applied after everything queued before them */
+  deleted(m: Deleted): void;
   /** end of a slice that applied or handled something (renderers invalidate here) */
   tick(): void;
 }
@@ -77,6 +80,10 @@ export class IngestScheduler {
   }
   pushReplayDone(): void {
     this.q.push({ k: "replayDone" });
+    this.kick();
+  }
+  pushDeleted(m: Deleted): void {
+    this.q.push({ k: "deleted", m });
     this.kick();
   }
 
@@ -140,6 +147,7 @@ export class IngestScheduler {
         worked = true;
         if (it.k === "done") this.h.done(it.m);
         else if (it.k === "ended") this.h.ended(it.m);
+        else if (it.k === "deleted") this.h.deleted(it.m);
         else this.h.replayDone();
       }
       if (this.env.now() >= deadline) break;

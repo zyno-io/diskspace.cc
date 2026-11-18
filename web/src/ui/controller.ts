@@ -5,12 +5,41 @@
 // `version` signal is throttled so chrome re-renders at most ~4×/s mid-scan.
 
 import { batch, computed, signal } from "@preact/signals";
-import type { AgentInfo, ByeMsg, ConnState, NodeBatch, Progress, ScanDone, ScanEnded, ScanStarted, ScanState, Session } from "../protocol/types";
+import { MAX_V2A_BODY } from "../protocol/messages";
+import type { AgentInfo, ByeMsg, ConnState, Deleted, DeleteItem, DeleteMode, DeleteStatus, NodeBatch, Progress, ScanDone, ScanEnded, ScanStarted, ScanState, Session } from "../protocol/types";
 import { defaultUnits, type Units } from "../store/format";
 import { TreeStore } from "../store/tree";
+import { DEFAULT_MAX_ITEMS, featureReason, itemKey, nodeReason, queuedAncestor, resolveKey, wireItem } from "./deletion";
 import { IngestScheduler, trackInput, type IngestEnv } from "./ingest";
 
 export type Phase = "connecting" | "picker" | "scanning" | "done" | "stopped" | "superseded" | "closed" | "error";
+
+/** a delete request this viewer sent (or a running job it adopted after reconnecting) */
+export interface DeleteRequestView {
+  reqId: number;
+  mode: DeleteMode;
+  /** what was asked for, as shown at request time (empty for an adopted job) */
+  names: string[];
+  bytes: number;
+  count: number;
+  job: number | null;
+  status: DeleteStatus | null;
+  /** Cancel was pressed (sent once the agent names the job) */
+  cancelWanted: boolean;
+  /** ended without an agent answer (e.g. "disconnected") */
+  localError?: string;
+}
+
+export interface MenuState {
+  node: number;
+  x: number;
+  y: number;
+  /** opened from the keyboard: focus the first item */
+  keyboard: boolean;
+}
+
+const TERMINAL = new Set(["done", "refused", "failed"]);
+const te = new TextEncoder();
 
 export class Controller {
   readonly store = new TreeStore();
@@ -41,6 +70,22 @@ export class Controller {
   readonly stopping = signal(false);
   /** the agent can pause (older agents cannot) */
   readonly canPause = computed(() => this.info.value?.features?.pause === true);
+
+  // ---- deletion queue ----------------------------------------------------------
+  /** queued nodes in the order they were added */
+  readonly queue = signal<number[]>([]);
+  readonly queueSet = computed(() => new Set(this.queue.value));
+  readonly drawerOpen = signal(false);
+  readonly menu = signal<MenuState | null>(null);
+  readonly request = signal<DeleteRequestView | null>(null);
+  /** short-lived status line ("Path copied", why something can't be queued) */
+  readonly notice = signal<string | null>(null);
+  /** why the deletion feature can't be used at all (older agent, no confirmation channel), or null */
+  readonly deleteUnavailable = computed(() => featureReason(this.info.value));
+  /** persisted keys waiting for the tree (resolved after REPLAY_DONE or the scan's end) */
+  private pendingKeys: string[] = [];
+  private nextReqId = (Date.now() % 1_000_000_000) + 1;
+  private noticeTimer = 0;
 
   readonly phase = computed<Phase>(() => {
     const c = this.conn.value;
@@ -77,7 +122,11 @@ export class Controller {
         batchDone: (b) => this.session.applied(b.wireBytes, b.gen),
         done: (m) => this.onDone(m),
         ended: (m) => this.onEnded(m),
-        replayDone: () => this.flush(),
+        replayDone: () => {
+          this.resolvePending();
+          this.flush();
+        },
+        deleted: (m) => this.onDeleted(m),
         tick: () => this.changed(false),
       },
       env,
@@ -88,6 +137,7 @@ export class Controller {
   /** stop listening for input (view teardown) */
   dispose(): void {
     window.clearTimeout(this.pendingTimer);
+    window.clearTimeout(this.noticeTimer);
     this.untrack?.();
     this.untrack = null;
   }
@@ -96,11 +146,18 @@ export class Controller {
     this.session.start({
       state: (s) => {
         this.conn.value = s;
+        // the agent cancels a request that is still unapproved when its connection drops
+        const r = this.request.peek();
+        if (r && !this.requestFinished(r) && s.s !== "connected" && s.s !== "handshaking" && s.s !== "connecting") {
+          const unapproved = !r.status || r.status.state === "preparing" || r.status.state === "awaiting";
+          if (unapproved) this.request.value = { ...r, localError: "disconnected" };
+        }
       },
       agentInfo: (i) => {
         batch(() => {
           this.info.value = i;
           if (!this.unitsTouched) this.units.value = defaultUnits(i.os);
+          this.adoptJob(i);
         });
       },
       scanStarted: (m) => this.onScanStarted(m),
@@ -112,6 +169,8 @@ export class Controller {
       scanEnded: (m) => this.ingest.pushEnded(m),
       scanState: (m) => this.onScanState(m),
       replayDone: () => this.ingest.pushReplayDone(),
+      deleteStatus: (m) => this.onDeleteStatus(m),
+      deleted: (m) => this.ingest.pushDeleted(m),
       bye: (m) => {
         this.bye.value = m;
         if (m.reason === "superseded") this.conn.value = { s: "superseded" };
@@ -205,14 +264,261 @@ export class Controller {
     if (st.applyDirFiles(df)) this.changed(true);
   }
 
+  // ---- deletion queue ------------------------------------------------------------
+
+  /** why `n` can't be added to the queue right now, or null (also null when already queued) */
+  queueReason(n: number): string | null {
+    const st = this.store;
+    const f = this.deleteUnavailable.peek();
+    if (f) return f;
+    const r = nodeReason(st, n, this.info.peek());
+    if (r) return r;
+    const q = this.queueSet.peek();
+    if (q.has(n)) return null;
+    const a = queuedAncestor(st, n, q);
+    if (a >= 0) return `Included in queued ${st.names[a] || st.rootPath}`;
+    const max = this.info.peek()?.features?.delete?.maxItems ?? DEFAULT_MAX_ITEMS;
+    if (this.queue.peek().length >= max) return `The queue is full (${max} items)`;
+    return null;
+  }
+
+  isQueued(n: number): boolean {
+    return this.queueSet.peek().has(n);
+  }
+
+  /** add or remove; returns the reason when `n` can't be added */
+  toggleQueue(n: number): string | null {
+    if (this.isQueued(n)) {
+      this.removeFromQueue(n);
+      return null;
+    }
+    return this.addToQueue(n);
+  }
+
+  addToQueue(n: number): string | null {
+    const why = this.queueReason(n);
+    if (why) return why;
+    if (this.isQueued(n)) return null;
+    const st = this.store;
+    // a queued folder covers everything below it
+    const next = this.queue.peek().filter((q) => !st.isAncestor(n, q));
+    next.push(n);
+    this.queue.value = next;
+    this.saveQueue();
+    return null;
+  }
+
+  removeFromQueue(n: number): void {
+    const q = this.queue.peek();
+    if (!q.includes(n)) return;
+    this.queue.value = q.filter((x) => x !== n);
+    this.saveQueue();
+  }
+
+  clearQueue(): void {
+    this.queue.value = [];
+    this.saveQueue();
+  }
+
+  /** why a delete request can't be sent now (scan state, other jobs), or null */
+  applyReason(): string | null {
+    const f = this.deleteUnavailable.peek();
+    if (f) return f;
+    const ph = this.phase.peek();
+    if (ph === "scanning") return "Finish or stop the scan first";
+    if (ph !== "done" && ph !== "stopped") return "Not connected";
+    const r = this.request.peek();
+    if (r && !this.requestFinished(r)) return "Another request is in progress";
+    const d = this.info.peek()?.deleting;
+    if (d && !TERMINAL.has(d.state)) return "A deletion is running on this computer";
+    return null;
+  }
+
+  /** the agent can move to the Trash (else only permanent deletion is offered) */
+  canTrash(): boolean {
+    return this.info.peek()?.features?.delete?.trash !== false;
+  }
+
+  /** send the whole queue */
+  applyQueue(mode: DeleteMode): string | null {
+    return this.sendDelete(this.queue.peek(), mode);
+  }
+
+  /** "Move to Trash now": one item, skipping the queue */
+  trashNow(n: number): string | null {
+    const why = this.deleteUnavailable.peek() ?? nodeReason(this.store, n, this.info.peek());
+    if (why) return why;
+    return this.sendDelete([n], "trash");
+  }
+
+  private sendDelete(nodes: number[], mode: DeleteMode): string | null {
+    const why = this.applyReason();
+    if (why) return why;
+    if (mode === "trash" && !this.canTrash()) return "The Trash isn't available on this computer";
+    const st = this.store;
+    const items: DeleteItem[] = [];
+    const names: string[] = [];
+    let bytes = 0;
+    for (const n of nodes) {
+      const it = wireItem(st, n);
+      if (!it || st.isRemoved(n)) continue;
+      items.push(it);
+      names.push(st.names[n]);
+      bytes += st.size(n);
+    }
+    if (items.length === 0) return "Nothing to delete";
+    const req = { reqId: this.nextReqId++, scanId: st.scanId, mode, items };
+    if (te.encode(JSON.stringify(req)).length + 1 > MAX_V2A_BODY) return "Too many items to send at once. Remove some and try again.";
+    this.request.value = { reqId: req.reqId, mode, names, bytes, count: items.length, job: null, status: null, cancelWanted: false };
+    this.menu.value = null;
+    this.session.deleteRequest(req);
+    return null;
+  }
+
+  requestFinished(r: DeleteRequestView): boolean {
+    return !!r.localError || (!!r.status && TERMINAL.has(r.status.state));
+  }
+
+  /** withdraw before approval, or stop after the current item once running */
+  cancelRequest(): void {
+    const r = this.request.peek();
+    if (!r || this.requestFinished(r) || r.cancelWanted) return;
+    this.request.value = { ...r, cancelWanted: true };
+    // before the agent names the job, the cancel goes out with its first status
+    if (r.job !== null) this.session.deleteCancel(r.job);
+  }
+
+  closeRequest(): void {
+    const r = this.request.peek();
+    if (r && !this.requestFinished(r)) return;
+    this.request.value = null;
+  }
+
+  private onDeleteStatus(m: DeleteStatus): void {
+    const r = this.request.peek();
+    const mine = !!r && (r.job === m.job || (r.job === null && r.reqId === m.reqId));
+    if (!r || !mine) {
+      // a job from before a reload or reconnect: follow it while it runs
+      if ((r && !this.requestFinished(r)) || TERMINAL.has(m.state)) return;
+      this.request.value = { reqId: m.reqId, mode: "trash", names: [], bytes: 0, count: m.total, job: m.job, status: m, cancelWanted: false };
+      return;
+    }
+    if (this.requestFinished(r) && !r.localError) return;
+    this.request.value = { ...r, job: m.job, status: m, localError: undefined };
+    if (r.job === null && r.cancelWanted && !TERMINAL.has(m.state)) this.session.deleteCancel(m.job);
+  }
+
+  /** AGENT_INFO.deleting after a reconnect: show the running job */
+  private adoptJob(i: AgentInfo): void {
+    const d = i.deleting;
+    if (!d || TERMINAL.has(d.state)) return;
+    const r = this.request.peek();
+    if (r && (r.job === d.job || !this.requestFinished(r))) return;
+    this.request.value = { reqId: 0, mode: "trash", names: [], bytes: 0, count: d.total, job: d.job, status: { job: d.job, reqId: 0, state: d.state, total: d.total, done: d.done, freedAlloc: 0 }, cancelWanted: false };
+  }
+
+  private onDeleted(m: Deleted): void {
+    const st = this.store;
+    if (!st.applyDeleted(m)) return;
+    batch(() => {
+      const z = this.zoom.peek();
+      if (z >= 0 && st.isRemoved(z)) this.zoom.value = st.survivor(z);
+      const sel = this.selected.peek();
+      if (sel >= 0 && st.isRemoved(sel)) this.selected.value = st.survivor(sel);
+      const hov = this.hovered.peek();
+      if (hov >= 0 && st.isRemoved(hov)) this.hovered.value = -1;
+      const menu = this.menu.peek();
+      if (menu && st.isRemoved(menu.node)) this.menu.value = null;
+      // deleted items leave the queue; failed ones stay
+      const q = this.queue.peek();
+      const live = q.filter((n) => !st.isRemoved(n));
+      if (live.length !== q.length) {
+        this.queue.value = live;
+        this.saveQueue();
+      }
+    });
+    this.changed(true);
+  }
+
+  /** brief status line */
+  flash(text: string): void {
+    this.notice.value = text;
+    window.clearTimeout(this.noticeTimer);
+    this.noticeTimer = window.setTimeout(() => (this.notice.value = null), 2600);
+  }
+
+  // ---- queue persistence (sessionStorage, keyed by sid and scan) -------------------
+
+  private queueKeys(): string[] {
+    const st = this.store;
+    const out: string[] = [];
+    for (const n of this.queue.peek()) {
+      const k = itemKey(st, n);
+      if (k) out.push(k);
+    }
+    return out;
+  }
+
+  private storageKey(scanId: number): string {
+    return `diskspace:dq:${this.session.id ?? "local"}:${scanId}`;
+  }
+
+  private loadQueue(scanId: number): string[] {
+    try {
+      const raw = sessionStorage.getItem(this.storageKey(scanId));
+      const v = raw ? (JSON.parse(raw) as unknown) : null;
+      return Array.isArray(v) ? v.filter((k): k is string => typeof k === "string") : [];
+    } catch {
+      return [];
+    }
+  }
+
+  private saveQueue(): void {
+    const st = this.store;
+    if (st.scanId < 0) return;
+    const keys = [...new Set([...this.queueKeys(), ...this.pendingKeys])];
+    try {
+      const k = this.storageKey(st.scanId);
+      if (keys.length) sessionStorage.setItem(k, JSON.stringify(keys));
+      else sessionStorage.removeItem(k);
+    } catch {
+      /* storage blocked: the queue lives in memory only */
+    }
+  }
+
+  /** map persisted keys back to nodes once the tree is complete; unresolved ones are dropped */
+  private resolvePending(): void {
+    if (this.pendingKeys.length === 0) return;
+    const keys = this.pendingKeys;
+    this.pendingKeys = [];
+    const st = this.store;
+    const info = this.info.peek();
+    const q = [...this.queue.peek()];
+    const set = new Set(q);
+    for (const k of keys) {
+      const n = resolveKey(st, k);
+      if (n < 0 || set.has(n) || nodeReason(st, n, info)) continue;
+      q.push(n);
+      set.add(n);
+    }
+    // keep only the outermost of nested entries
+    this.queue.value = q.filter((n) => queuedAncestor(st, n, set) < 0);
+    this.saveQueue();
+  }
+
   // ---- internals --------------------------------------------------------------
 
   private onScanStarted(m: ScanStarted): void {
     // Anything still queued is obsolete: a new scan, or a reconnect replaying this
     // scan from the start (same scanId) into the reset store.
     this.ingest.discardAll();
+    // same scan replayed: keep what was queued and re-resolve it once the tree is back
+    const keep = this.store.scanId === m.scanId ? [...this.queueKeys(), ...this.pendingKeys] : [];
     this.store.reset(m);
+    this.pendingKeys = [...new Set([...keep, ...this.loadQueue(m.scanId)])];
     batch(() => {
+      this.queue.value = [];
+      this.menu.value = null;
       this.scan.value = m;
       this.progress.value = null;
       this.done.value = null;
@@ -235,6 +541,7 @@ export class Controller {
 
   private onEnded(m: ScanEnded): void {
     if (m.scanId !== this.store.scanId) return;
+    this.resolvePending();
     this.flush();
     batch(() => {
       this.clearPause();
@@ -245,13 +552,16 @@ export class Controller {
   private onDone(m: ScanDone): void {
     const st = this.store;
     if (m.scanId !== st.scanId) return;
-    // synthetic remainder only for whole-volume scans
+    // synthetic remainder only for whole-volume scans, from the volume's usage at
+    // SCAN_STARTED: a replay after deletions computes the same remainder
     const s = this.scan.value;
-    const vol = this.info.value?.volumes.find((v) => s && samePath(v.path, s.path));
-    if (vol && s) {
-      const rest = vol.used - st.totAlloc[st.root];
-      st.setSynthetic(rest > vol.used * 0.01 ? rest : 0);
+    const whole = !!s && !!this.info.value?.volumes.some((v) => samePath(v.path, s.path));
+    const used = s?.volume?.used ?? 0;
+    if (whole && used > 0) {
+      const rest = used - st.totAlloc[st.root];
+      st.setSynthetic(rest > used * 0.01 ? rest : 0);
     }
+    this.resolvePending();
     if (st.orphanCount() > 0 || !st.rootSettled()) {
       this.protocolError.value = `scan finished with ${st.orphanCount()} unattached folders`;
       console.warn("diskspace: SCAN_DONE before tree settled", { orphans: st.orphanCount() });

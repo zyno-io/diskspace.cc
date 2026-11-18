@@ -45,6 +45,7 @@ function harness(msPerRecord = 0.01) {
     done: (m) => log.push(`done:${m.scanId}`),
     ended: (m) => log.push(`ended:${m.scanId}`),
     replayDone: () => log.push("replayDone"),
+    deleted: (m) => log.push(`deleted:${m.job}`),
     tick: () => log.push("tick"),
   };
   const s = new IngestScheduler(h, env);
