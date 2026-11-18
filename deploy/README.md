@@ -50,15 +50,10 @@ In the Cloudflare dashboard, add a public hostname to the tunnel:
 Order it before the catch-all `diskspace.cc` route, or the relay will receive
 the request instead.
 
-Also add a WAF custom rule that blocks oversized requests to the hook, since
-`webhook` buffers the whole body before checking the signature and an
-out-of-memory kill mid-deploy would take the relay down with it:
-
-```
-(http.request.uri.path eq "/hooks/diskspace-deploy" and http.request.body.size gt 4096)
-```
-
-Action: Block. (A real request is about 60 bytes.)
+Request bodies are capped at 4 KiB inside the sidecar. `webhook` buffers whole
+bodies before checking the signature, so `limitproxy` (PID 1) answers 413 for
+larger bodies, including over-long chunked ones, and forwards the rest to
+`webhook` on loopback. A real request is about 60 bytes. No WAF rule is needed.
 
 ## GitHub configuration
 

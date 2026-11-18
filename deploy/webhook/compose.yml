@@ -23,9 +23,10 @@ services:
           create_host_path: false
     secrets:
       - deploy_secret
-    # webhook buffers whole request bodies before checking the signature and
-    # has no size limit. Cap memory so oversized unsigned requests can only
-    # OOM-kill this container (restart policy recovers it), not the host.
+    # limitproxy (PID 1) caps request bodies at 4 KiB because webhook buffers
+    # whole bodies before checking the signature. The memory cap is a backstop:
+    # a runaway can only OOM-kill this container (restart policy recovers it),
+    # not the host.
     mem_limit: 128m
     memswap_limit: 128m
     pids_limit: 64

@@ -155,6 +155,34 @@ if [ -f /test/fail ]; then exit 17; fi
         self.assertNotEqual(self.request(body, signature="sha256=" + "0" * 64)[0], 202)
         self.assert_no_deploy()
 
+    def oversized(self, size=5000):
+        # Otherwise-valid payload padded past the 4 KiB cap.
+        body = json.dumps({"version": "1.2.3", "timestamp": str(int(time.time())), "pad": "x" * size}).encode()
+        self.assertGreater(len(body), 4096)
+        return body
+
+    def test_oversized_body_is_rejected_before_reaching_webhook(self):
+        body = self.oversized()
+        self.assertEqual(self.request(body)[0], 413)
+        self.assertEqual(self.request(body, signed=False)[0], 413)
+        self.assert_no_deploy()
+
+    def test_oversized_chunked_body_is_rejected(self):
+        body = self.oversized()
+        signature = "sha256=" + hmac.new(self.secret.encode(), body, hashlib.sha256).hexdigest()
+        chunks = (body[i:i + 1000] for i in range(0, len(body), 1000))  # no Content-Length: chunked
+        request = urllib.request.Request(self.url, data=chunks, method="POST", headers={
+            "Content-Type": "application/json", "X-Diskspace-Signature": signature})
+        try:
+            with urllib.request.urlopen(request, timeout=5) as response:
+                status = response.status
+        except urllib.error.HTTPError as error:
+            status = error.code
+        except urllib.error.URLError:
+            status = 0
+        self.assertNotEqual(status, 202)
+        self.assert_no_deploy()
+
     def test_get_cannot_deploy(self):
         self.assertEqual(self.request(self.payload(), method="GET")[0], 405)
         self.assert_no_deploy()
