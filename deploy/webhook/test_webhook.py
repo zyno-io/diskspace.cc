@@ -42,6 +42,11 @@ class DeployHookTest(unittest.TestCase):
         stub = cls.root / "docker"
         stub.write_text("""#!/bin/sh
 set -eu
+if [ "$#" -ge 6 ] && [ "$6" = config ]; then
+    if [ -f /test/pinned ]; then echo ghcr.io/zyno-io/diskspace-relay:0.0.1
+    else echo ghcr.io/zyno-io/diskspace-relay:latest; fi
+    exit 0
+fi
 if [ "$1" = image ] && [ "$2" = tag ]; then
     printf '%s\\n' "$@" > /test/tag-args
     exit 0
@@ -129,7 +134,7 @@ if [ -f /test/fail ]; then exit 17; fi
         raise AssertionError("Timed out waiting for the test sidecar")
 
     def setUp(self):
-        for name in ["block", "fail", "started", "args", "tag-args", "override.json"]:
+        for name in ["block", "fail", "pinned", "started", "args", "tag-args", "override.json"]:
             (self.root / name).unlink(missing_ok=True)
 
     def tearDown(self):
@@ -174,6 +179,13 @@ if [ -f /test/fail ]; then exit 17; fi
         self.assertEqual(override, {"services": {"diskspace-relay": {"image": "ghcr.io/zyno-io/diskspace-relay:1.2.3"}}})
         self.assertEqual((self.root / "tag-args").read_text().splitlines(),
                          ["image", "tag", "ghcr.io/zyno-io/diskspace-relay:1.2.3", "ghcr.io/zyno-io/diskspace-relay:latest"])
+
+    def test_pinned_production_image_refuses_to_deploy(self):
+        (self.root / "pinned").touch()
+        result = docker("exec", self.container, "/usr/local/bin/diskspace-deploy", "1.2.3", str(int(time.time())), check=False)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn(":latest", result.stderr)
+        self.assert_no_deploy()
 
     def test_concurrent_request_does_not_start_a_second_deploy(self):
         (self.root / "block").touch()

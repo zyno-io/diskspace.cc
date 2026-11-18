@@ -9,6 +9,12 @@ Release workflow (or a manual Deploy run) calls after an image is published.
 /opt/diskspace/compose.yaml   # copy of deploy/compose.yaml
 ```
 
+The production file must resolve the relay image to
+`ghcr.io/zyno-io/diskspace-relay:latest`: no `DISKSPACE_RELAY_IMAGE` pin in
+`/opt/diskspace/.env`. The sidecar refuses to deploy otherwise, because a
+pinned tag would make a later manual `docker compose up` silently restore the
+old version.
+
 The relay runs as compose project `diskspace`, service `diskspace-relay`, image
 `ghcr.io/zyno-io/diskspace-relay:latest`. It and the `cloudflared` connector
 share the external Docker network `cloudflared-diskspace`.
@@ -44,6 +50,16 @@ In the Cloudflare dashboard, add a public hostname to the tunnel:
 Order it before the catch-all `diskspace.cc` route, or the relay will receive
 the request instead.
 
+Also add a WAF custom rule that blocks oversized requests to the hook, since
+`webhook` buffers the whole body before checking the signature and an
+out-of-memory kill mid-deploy would take the relay down with it:
+
+```
+(http.request.uri.path eq "/hooks/diskspace-deploy" and http.request.body.size gt 4096)
+```
+
+Action: Block. (A real request is about 60 bytes.)
+
 ## GitHub configuration
 
 In the `release` environment of this repository:
@@ -62,7 +78,8 @@ cannot choose a command, repository or service. The workflow then polls
 `https://diskspace.cc/version` and `/healthz`.
 
 Full (non-prerelease) tags deploy automatically at the end of the Release
-workflow.
+workflow. An automatic deploy is skipped (with a warning) if a newer full
+release exists or production already runs a newer version.
 
 ## Rollback
 

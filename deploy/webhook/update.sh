@@ -23,13 +23,24 @@ if ! flock -n 9; then
     exit 75
 fi
 
+compose_file=${DISKSPACE_DEPLOY_COMPOSE_FILE:-compose.yaml}
+# The retag below only sticks if the production file resolves to :latest.
+# A pinned tag (e.g. from .env) would make a later manual `compose up`
+# silently restore the pinned version, so refuse instead.
+configured=$(timeout -k 5 30 docker compose --project-directory "$PWD" --file "$compose_file" \
+    config --images diskspace-relay)
+if [ "$configured" != "ghcr.io/zyno-io/diskspace-relay:latest" ]; then
+    echo 'Production compose must use ghcr.io/zyno-io/diskspace-relay:latest (see deploy/README.md)' >&2
+    exit 1
+fi
+
 # Only the image changes; preserve the production service's ports, volumes,
 # environment, and project. Request data never selects a command or repository.
 override=$(mktemp /run/diskspace-deploy-override.XXXXXX)
 trap 'rm -f "$override"' EXIT
 printf '{"services":{"diskspace-relay":{"image":"ghcr.io/zyno-io/diskspace-relay:%s"}}}\n' "$version" > "$override"
 timeout -k 10 600 docker compose --project-directory "$PWD" \
-    --file "${DISKSPACE_DEPLOY_COMPOSE_FILE:-compose.yaml}" --file "$override" \
+    --file "$compose_file" --file "$override" \
     up --detach --no-deps --no-build --pull always diskspace-relay
 # The production file uses :latest. Keep that local alias on the deployed
 # image so a later manual `compose up` cannot restore a stale cached image.
