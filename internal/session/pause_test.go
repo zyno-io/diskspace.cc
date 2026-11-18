@@ -76,7 +76,7 @@ func TestE2EPauseResume(t *testing.T) {
 	v.send(proto.MsgScanPause, proto.ScanPause{ScanID: 1, Paused: false})
 	v.expectState(false)
 	e.rec.wait(t, EvScanResumed, 5*time.Second)
-	r := v.collect()
+	r := v.collectScan(1)
 	checkTotals(t, r, tree)
 	if r.Done == nil || r.Done.Ms < 0 {
 		t.Fatalf("done: %+v", r.Done)
@@ -109,7 +109,7 @@ func TestE2EPauseReplay(t *testing.T) {
 	v2.expect(proto.MsgReplayDone, nil)
 	v2.send(proto.MsgScanPause, proto.ScanPause{ScanID: 1, Paused: false})
 	v2.expectState(false)
-	checkTotals(t, v2.collect(), tree)
+	checkTotals(t, v2.collectScan(1), tree)
 }
 
 // A viewer without caps.scanState never receives SCAN_STATE, and attaching to

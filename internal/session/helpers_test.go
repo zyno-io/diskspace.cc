@@ -438,7 +438,29 @@ type scanResult struct {
 // collect reads until SCAN_DONE / SCAN_ENDED.
 func (v *testViewer) collect() *scanResult {
 	v.t.Helper()
+	return v.collectInto(&scanResult{})
+}
+
+// collectScan is collect for a scan whose SCAN_STARTED the test already consumed.
+func (v *testViewer) collectScan(id uint64) *scanResult {
+	v.t.Helper()
 	r := &scanResult{}
+	r.Started.ScanID = id
+	return v.collectInto(r)
+}
+
+// finishReplay waits for REPLAY_DONE if it has not arrived yet: for a scan that
+// had already ended at attach it follows the end message.
+func (v *testViewer) finishReplay(r *scanResult) {
+	v.t.Helper()
+	if !r.ReplayDone {
+		v.expect(proto.MsgReplayDone, nil)
+		r.ReplayDone = true
+	}
+}
+
+func (v *testViewer) collectInto(r *scanResult) *scanResult {
+	v.t.Helper()
 	for {
 		typ, body := v.must(30 * time.Second)
 		switch typ {

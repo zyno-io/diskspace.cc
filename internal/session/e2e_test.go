@@ -106,11 +106,12 @@ func TestE2EScanAndQueries(t *testing.T) {
 	v2.handshakeMsgs()
 	r2 := v2.collect()
 	checkTotals(t, r2, tree)
+	v2.finishReplay(r2) // the scan had ended at attach: REPLAY_DONE follows SCAN_DONE
 	if r2.Done.Totals != r.Done.Totals {
 		t.Fatalf("replay totals differ: %+v vs %+v", r2.Done.Totals, r.Done.Totals)
 	}
 	if !r2.ReplayDone {
-		t.Fatal("no REPLAY_DONE before SCAN_DONE of replay")
+		t.Fatal("no REPLAY_DONE after the replayed SCAN_DONE")
 	}
 	// v was superseded.
 	var sawBye bool
@@ -144,9 +145,7 @@ func TestE2EReconnectMidScan(t *testing.T) {
 	v2.handshakeMsgs()
 	r := v2.collect()
 	checkTotals(t, r, tree)
-	if !r.ReplayDone {
-		t.Fatal("expected REPLAY_DONE")
-	}
+	v2.finishReplay(r) // before SCAN_DONE if the scan was still running at attach, else right after it
 	// A second scan (cancel + restart) gets a new monotonic id.
 	v2.send(proto.MsgScanStart, proto.ScanStart{Path: tree})
 	r2 := v2.collect()
