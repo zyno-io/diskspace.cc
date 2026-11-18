@@ -45,31 +45,51 @@ func (g *RootGuard) contained(resolved string) (Identity, bool) {
 	if err != nil {
 		return Identity{}, false
 	}
+	defer unix.Close(fd)
 	id, err := fdIdentity(fd)
-	if err != nil {
-		unix.Close(fd)
+	if err != nil || !walkUp(fd, g.id) {
 		return Identity{}, false
 	}
-	cur := id
+	return id, true
+}
+
+// walkUp walks upward through ".." from fd (left open), starting at fd's own
+// directory, and reports whether every non-zero stop is met, in order, before
+// the filesystem root. One level may meet several equal stops at once.
+func walkUp(fd int, stops ...Identity) bool {
+	cur, err := fdIdentity(fd)
+	if err != nil {
+		return false
+	}
+	at := fd // the directory at the current level; owned when != fd
+	defer func() {
+		if at != fd {
+			unix.Close(at)
+		}
+	}()
+	k := 0
 	for i := 0; i < maxGuardWalk; i++ {
-		if cur == g.id {
-			unix.Close(fd)
-			return id, true
+		for k < len(stops) && (stops[k].IsZero() || stops[k] == cur) {
+			k++
 		}
-		pfd, err := openatDir(fd, "..")
-		unix.Close(fd)
+		if k == len(stops) {
+			return true
+		}
+		pfd, err := openatDir(at, "..")
+		if at != fd {
+			unix.Close(at)
+		}
+		at = fd
 		if err != nil {
-			return Identity{}, false
+			return false
 		}
-		fd = pfd
-		pid, err := fdIdentity(fd)
+		at = pfd
+		pid, err := fdIdentity(at)
 		if err != nil || pid == cur {
-			// error, or ".." of the filesystem root is itself: not contained.
-			unix.Close(fd)
-			return Identity{}, false
+			// error, or ".." of the filesystem root is itself: not met.
+			return false
 		}
 		cur = pid
 	}
-	unix.Close(fd)
-	return Identity{}, false
+	return false
 }
