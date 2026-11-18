@@ -36,6 +36,9 @@ services:
       - /tmp
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
+    # docker-init reaps orphans (limitproxy is not an init) and exits when
+    # limitproxy does, so the restart policy recovers the pair.
+    init: true
     restart: unless-stopped
 
 networks:
