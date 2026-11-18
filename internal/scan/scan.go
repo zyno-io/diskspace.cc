@@ -179,6 +179,19 @@ func (s *Scanner) DirIdentity(id uint64) (Identity, bool) {
 	return e.ident, true
 }
 
+// ParentOf returns the parent id of announced directory id (the scan root,
+// id 0, has none).
+func (s *Scanner) ParentOf(id uint64) (uint64, bool) {
+	if id == 0 {
+		return 0, false
+	}
+	e, ok := s.arena.get(id)
+	if !ok {
+		return 0, false
+	}
+	return e.parent - 1, true
+}
+
 // DirScanned reports whether announced directory id was actually scanned, i.e.
 // it was announced without child flags (OTHER_DEVICE, BIND_MOUNT, REPARSE,
 // DUP_DIR, ...). Flagged directories were never opened by the scanner, so their

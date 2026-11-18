@@ -27,7 +27,11 @@ func elevateWindows(o *Options, version, self string, stderr io.Writer, fail fun
 		return fail("ipc: " + err.Error())
 	}
 	defer l.Close()
-	child, err := elevate.RunAsAdmin(self, AgentArgsFor(o, os.Getpid(), o.Relay, l.Addr(), tokFile, "cli"), false)
+	co := *o
+	if elevate.HasTTY() {
+		co.ConfirmVia = ConfirmConsole // deletions are approved in this console
+	}
+	child, err := elevate.RunAsAdmin(self, AgentArgsFor(&co, os.Getpid(), o.Relay, l.Addr(), tokFile, "cli"), false)
 	if err != nil {
 		if errors.Is(err, elevate.ErrCancelled) {
 			fmt.Fprintf(stderr, "diskspace: administrator permission was declined; continuing as %s.\n", elevate.CurrentUser())
@@ -68,6 +72,10 @@ func elevateWindows(o *Options, version, self string, stderr io.Writer, fail fun
 	})
 	rend.Header()
 	defer rend.Close()
+	cctx, ccancel := context.WithCancel(context.Background())
+	defer ccancel()
+	asker := &cli.Confirmer{Hold: rend.Hold}
+	confirms := newConfirmServer(conn, asker.Confirm)
 
 	msgs := make(chan ipc.Msg)
 	recvErr := make(chan error, 1)
@@ -100,6 +108,9 @@ func elevateWindows(o *Options, version, self string, stderr io.Writer, fail fun
 	for {
 		select {
 		case m := <-msgs:
+			if confirms.handle(cctx, m) {
+				continue
+			}
 			if m.T == ipc.TReady {
 				ready = true
 				if m.URL != "" {

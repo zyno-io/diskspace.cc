@@ -36,6 +36,12 @@ func runAgentMode(o *Options, version string) int {
 		cfg.Elevation = "gui-admin" // elevated by the desktop app (osascript / UAC)
 	}
 	fda := cfg.FDA
+	var asker *ipcConfirmer
+	if o.ConfirmVia != "" {
+		// the parent (desktop app dialog / Windows console) approves deletions
+		asker = newIPCConfirmer(conn)
+		cfg.Confirm, cfg.ConfirmKind = asker.Confirm, o.ConfirmVia
+	}
 	cfg.Events = func(ev session.Event) {
 		if m, ok := eventIPC(ev, elevated, fda); ok {
 			_ = conn.Send(m)
@@ -61,6 +67,10 @@ func runAgentMode(o *Options, version string) int {
 			switch m.T {
 			case ipc.TRotate:
 				a.Rotate()
+			case ipc.TConfirmReply:
+				if asker != nil {
+					asker.reply(m)
+				}
 			case ipc.TShutdown:
 				return
 			}

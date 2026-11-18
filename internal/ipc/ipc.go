@@ -40,6 +40,16 @@ const (
 	TError    = "error"
 	TRotate   = "rotate"
 	TShutdown = "shutdown"
+
+	// Deletion approval (agent --confirm-via app|console). The child asks
+	// with TConfirm{ID, Confirm}; the parent answers TConfirmReply{ID, OK}.
+	// TConfirmCancel{ID} tells the parent the request was withdrawn or timed
+	// out (a reply after it is ignored). TDelete reports a deletion that ran:
+	// State "started" | "item" (Path, Message: audit) | "done" (Message).
+	TConfirm       = "confirm"
+	TConfirmReply  = "confirmReply"
+	TConfirmCancel = "confirmCancel"
+	TDelete        = "delete"
 )
 
 // Msg is one IPC message. T selects which other fields are meaningful.
@@ -55,6 +65,10 @@ type Msg struct {
 	Path      string `json:"path,omitempty"`
 	Message   string `json:"message,omitempty"`
 	Elevation string `json:"elevation,omitempty"`
+	ID        uint64 `json:"id,omitempty"`
+	OK        bool   `json:"ok,omitempty"`
+	// Confirm is a session.ConfirmRequest (JSON) for TConfirm.
+	Confirm json.RawMessage `json:"confirm,omitempty"`
 }
 
 // Conn is an authenticated connection. Send is goroutine-safe; Recv must be

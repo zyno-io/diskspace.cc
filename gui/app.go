@@ -63,6 +63,9 @@ type App struct {
 	cfgPath string
 	spawn   launchFunc
 	emitFn  func(Snapshot)
+	dialog  dialogFunc
+
+	dialogMu sync.Mutex // one deletion dialog at a time
 
 	guiElevated bool
 
@@ -99,6 +102,7 @@ func newApp(version, defaultRelay string) (*App, error) {
 		home:    home,
 		cfgPath: cfgPath,
 		spawn:   defaultLaunch,
+		dialog:  wailsDialog,
 
 		guiElevated: elevate.IsElevated(),
 	}

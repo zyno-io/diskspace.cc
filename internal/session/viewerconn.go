@@ -56,6 +56,7 @@ type viewerConn struct {
 	done   chan struct{}
 
 	snd        *sender // nil until activated
+	viaRelay   bool    // connected through the relay (else the local server)
 	cmds       chan cmd
 	superseded bool
 	activated  bool
@@ -87,9 +88,9 @@ func (v *viewerConn) fail(code int, reason string) {
 
 // serveViewer runs the whole lifetime of one viewer connection. g is the
 // link generation the connection was accepted under.
-func (a *Agent) serveViewer(ws *websocket.Conn, g *generation) {
+func (a *Agent) serveViewer(ws *websocket.Conn, g *generation, viaRelay bool) {
 	ctx, cancel := context.WithCancel(g.ctx)
-	v := &viewerConn{a: a, ws: ws, ctx: ctx, cancel: cancel, done: make(chan struct{}), cmds: make(chan cmd, cmdQueueLen)}
+	v := &viewerConn{a: a, ws: ws, ctx: ctx, cancel: cancel, done: make(chan struct{}), cmds: make(chan cmd, cmdQueueLen), viaRelay: viaRelay}
 	defer close(v.done)
 	defer cancel()
 
@@ -174,6 +175,7 @@ func (a *Agent) serveViewer(ws *websocket.Conn, g *generation) {
 	defer comp.Close()
 	snd := newSender(ws, ciph, comp)
 	snd.scanState = hello.Caps.ScanState
+	snd.del = hello.Caps.Del
 	snd.onOverflow = func() { v.fail(closeRateLimit, "control queue overflow") }
 	if !a.activate(v, snd) {
 		return
@@ -219,7 +221,8 @@ func (a *Agent) serveViewer(ws *websocket.Conn, g *generation) {
 				return
 			}
 			snd.addCredit(m.N)
-		case proto.MsgGetRoots, proto.MsgBrowse, proto.MsgScanStart, proto.MsgScanCancel, proto.MsgScanPause, proto.MsgDirFilesReq:
+		case proto.MsgGetRoots, proto.MsgBrowse, proto.MsgScanStart, proto.MsgScanCancel, proto.MsgScanPause, proto.MsgDirFilesReq,
+			proto.MsgDeleteReq, proto.MsgDeleteCancel:
 			select {
 			case v.cmds <- cmd{typ, payload}:
 			default:
@@ -270,7 +273,19 @@ func (a *Agent) activate(v *viewerConn, snd *sender) bool {
 			info.Scan.Paused = true
 		}
 	}
+	info.Deleting = a.deletingLocked()
 	snd.pushJSON(proto.MsgAgentInfo, info)
+	if j := a.del; j != nil && snd.del {
+		// the running job's status follows AGENT_INFO.deleting
+		j.mu.Lock()
+		st := j.statusLocked()
+		j.mu.Unlock()
+		if !terminal(st.State) {
+			if b, err := proto.EncodeMsg(proto.MsgDeleteStatus, st); err == nil {
+				snd.setDeleteStatus(b)
+			}
+		}
+	}
 	if run != nil {
 		snd.attach(run, true)
 	} else {
@@ -368,7 +383,9 @@ func (v *viewerConn) handle(c cmd) {
 		if !snd.waitRoom(v.ctx) {
 			return
 		}
-		if _, err := a.startScan(opts); err != nil {
+		if _, err := a.startScan(opts); errors.Is(err, errDeleting) {
+			snd.pushErrorWait(v.ctx, "busy", "a deletion is in progress; start the scan when it has finished")
+		} else if err != nil {
 			snd.pushErrorWait(v.ctx, "scan_failed", errMessage(err))
 		}
 
@@ -387,6 +404,23 @@ func (v *viewerConn) handle(c cmd) {
 			return
 		}
 		a.setPaused(v, m.ScanID, m.Paused)
+
+	case proto.MsgDeleteReq:
+		var m proto.DeleteReq
+		if !snd.del || json.Unmarshal(c.payload, &m) != nil {
+			// a viewer that did not advertise caps.del can't be told the outcome
+			v.fail(closeProtocol, "protocol error")
+			return
+		}
+		a.requestDelete(v, m)
+
+	case proto.MsgDeleteCancel:
+		var m proto.DeleteCancel
+		if json.Unmarshal(c.payload, &m) != nil {
+			v.fail(closeProtocol, "protocol error")
+			return
+		}
+		a.cancelDelete(v, m.Job)
 
 	case proto.MsgDirFilesReq:
 		var m proto.DirFilesReq

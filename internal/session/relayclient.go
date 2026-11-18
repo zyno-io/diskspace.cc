@@ -200,5 +200,5 @@ func (a *Agent) dialData(ctx context.Context, g *generation, cid string) {
 	}
 	stop := context.AfterFunc(ctx, func() { _ = ws.CloseNow() })
 	defer stop()
-	a.serveViewer(ws, g)
+	a.serveViewer(ws, g, true)
 }
