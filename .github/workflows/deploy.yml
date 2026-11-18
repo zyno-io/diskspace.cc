@@ -1,0 +1,85 @@
+# SPDX-License-Identifier: MIT
+# Deploys a published full release to production through the signed deploy
+# webhook (see deploy/README.md), then smoke-tests https://diskspace.cc.
+# Run manually to deploy or roll back; release.yml calls it for full releases.
+name: Deploy published release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Published full release to deploy and smoke-test (e.g. v0.4.0)
+        required: true
+        type: string
+  workflow_call:
+    inputs:
+      tag:
+        description: Published full release to deploy and smoke-test (e.g. v0.4.0)
+        required: true
+        type: string
+    secrets:
+      DEPLOY_WEBHOOK_SECRET:
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: diskspace-production-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: release
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Verify the published release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          if ! [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo 'Expected a full release tag such as v0.4.0' >&2
+            exit 1
+          fi
+          gh release view "$RELEASE_TAG" --json isDraft,isPrerelease \
+            --jq '(.isDraft == false) and (.isPrerelease == false)' | grep -qx true
+      - name: Request deployment
+        env:
+          DEPLOY_WEBHOOK_URL: ${{ vars.DEPLOY_WEBHOOK_URL }}
+          DEPLOY_WEBHOOK_SECRET: ${{ secrets.DEPLOY_WEBHOOK_SECRET }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          export DEPLOY_VERSION="${RELEASE_TAG#v}"
+          python3 scripts/request-deploy.py
+      - name: Smoke-test production
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          want="${RELEASE_TAG#v}"
+          got=
+          # The sidecar answers 202 before the pull and restart finish.
+          for _ in $(seq 1 60); do
+            got=$(curl --fail --silent --show-error --proto '=https' --tlsv1.2 \
+              --connect-timeout 10 --max-time 20 https://diskspace.cc/version 2>/dev/null | tr -d '[:space:]' || true)
+            if [ "$got" = "$want" ]; then break; fi
+            sleep 10
+          done
+          if [ "$got" != "$want" ]; then
+            echo "::error::https://diskspace.cc/version reports '${got}', expected '${want}'"
+            exit 1
+          fi
+          code=$(curl --silent --output /dev/null --write-out '%{http_code}' --proto '=https' --tlsv1.2 \
+            --connect-timeout 10 --max-time 20 https://diskspace.cc/healthz || true)
+          if [ "$code" != 200 ]; then
+            echo "::error::https://diskspace.cc/healthz returned HTTP ${code}"
+            exit 1
+          fi
+          echo "Production is serving ${want}"
