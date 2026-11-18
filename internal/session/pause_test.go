@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/coder/websocket"
+
 	"github.com/zyno-io/diskspace.cc/internal/proto"
 )
 
@@ -216,4 +218,77 @@ func TestReplayDoneAfterEnd(t *testing.T) {
 	got := readTypes(v, proto.MsgReplayDone)
 	wantTypes(t, got[2:],
 		proto.MsgScanStarted, proto.MsgNodes, proto.MsgNodes, proto.MsgScanDone, proto.MsgReplayDone)
+}
+
+// A live viewer that stopped a scan gets SCAN_ENDED without waiting behind
+// unsent NODES (a replay, tested above, delivers them first).
+func TestLiveCancelEndsPromptly(t *testing.T) {
+	log := newScanLog(1, 1<<20)
+	for i := 0; i < 3; i++ {
+		log.append([]byte{proto.MsgNodes, 1, 0})
+	}
+	end, _ := proto.EncodeMsg(proto.MsgScanEnded, proto.ScanEnded{ScanID: 1, Reason: "canceled"})
+	log.finish(logEnd{Body: end})
+	started, _ := proto.EncodeMsg(proto.MsgScanStarted, proto.ScanStarted{ScanID: 1})
+	s := newSender(nil, nil, nil)
+	s.attach(&scanRun{id: 1, log: log, startedBody: started, state: "canceled"}, false)
+	if p := s.pick(); p.body[0] != proto.MsgScanStarted {
+		t.Fatalf("first message %#x", p.body[0])
+	}
+	if p := s.pick(); p.body == nil || p.body[0] != proto.MsgScanEnded {
+		t.Fatalf("second message %v, want SCAN_ENDED", p.body)
+	}
+}
+
+// An ended scan has no pause state: a pause request is not answered with a
+// "not paused" that a viewer could mistake for running.
+func TestNoScanStateForEndedScan(t *testing.T) {
+	e := newEnv(t, Config{})
+	end, _ := proto.EncodeMsg(proto.MsgScanEnded, proto.ScanEnded{ScanID: 1, Reason: "canceled"})
+	fakeRun(e, 1, end, false, "canceled")
+	v := connectViewerCaps(t, e.wsURL, e.sec, capsNew)
+	readTypes(v, proto.MsgReplayDone)
+	v.send(proto.MsgScanPause, proto.ScanPause{ScanID: 1, Paused: true})
+	v.send(proto.MsgScanPause, proto.ScanPause{ScanID: 1, Paused: false})
+	deadline := time.Now().Add(400 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		typ, _, err := v.recv(time.Until(deadline))
+		if err == errRecvTimeout {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if typ == proto.MsgScanState {
+			t.Fatal("SCAN_STATE sent for an ended scan")
+		}
+	}
+}
+
+// A connection that was superseded cannot pause or resume the scan.
+func TestSupersededViewerCannotPause(t *testing.T) {
+	tree := t.TempDir()
+	mkTree(t, tree, 20, 4)
+	startPaused(t)
+	e := newEnv(t, Config{})
+	v1 := connectViewerCaps(t, e.wsURL, e.sec, capsNew)
+	v1.handshakeMsgs()
+	v1.send(proto.MsgScanStart, proto.ScanStart{Path: tree})
+	v1.expect(proto.MsgScanStarted, nil)
+	v1.expectState(true)
+
+	v2 := connectViewerCaps(t, e.wsURL, e.sec, capsNew)
+	v2.handshakeMsgs()
+	v2.expect(proto.MsgReplayDone, nil)
+
+	// v1 is superseded; its socket may still be draining. Ignore write errors.
+	b, _ := proto.EncodeMsg(proto.MsgScanPause, proto.ScanPause{ScanID: 1, Paused: false})
+	if ct, err := v1.ciph.Seal(proto.FrameV2A(b)); err == nil {
+		ctx := ctx10(t)
+		_ = v1.ws.Write(ctx, websocket.MessageBinary, ct)
+	}
+	v2.quiet(400 * time.Millisecond) // a resumed scan would send NODES or SCAN_DONE
+	if p, _ := e.agent.currentRun().pauseState(); !p {
+		t.Fatal("superseded viewer resumed the scan")
+	}
 }

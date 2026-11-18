@@ -420,6 +420,7 @@ type scanRun struct {
 	done        chan struct{} // closed after the log is finished
 	started     time.Time
 
+	tickMu      sync.Mutex // serializes the progress ticker with pause/resume
 	mu          sync.Mutex
 	state       string // running | done | canceled | error
 	paused      bool
@@ -442,6 +443,14 @@ func (r *scanRun) elapsedMs() int64 {
 	return r.elapsedLocked(time.Now()).Milliseconds()
 }
 
+// live reports whether the scan is still running and not being canceled.
+func (r *scanRun) live() bool {
+	r.mu.Lock()
+	st := r.state
+	r.mu.Unlock()
+	return st == "running" && (r.ctx == nil || r.ctx.Err() == nil)
+}
+
 // pauseState reports whether a running scan is paused, and its elapsed ms.
 func (r *scanRun) pauseState() (paused bool, elapsedMs int64) {
 	r.mu.Lock()
@@ -453,7 +462,7 @@ func (r *scanRun) pauseState() (paused bool, elapsedMs int64) {
 func (r *scanRun) setPause(p bool) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.state != "running" || r.paused == p {
+	if r.state != "running" || (r.ctx != nil && r.ctx.Err() != nil) || r.paused == p {
 		return false
 	}
 	now := time.Now()
@@ -599,15 +608,18 @@ func (r *scanRun) run() {
 		for {
 			select {
 			case <-t.C:
-				if paused, _ := r.pauseState(); paused {
-					continue
+				// tickMu: a pause that lands now waits, so no progress event
+				// follows EvScanPaused
+				r.tickMu.Lock()
+				if paused, _ := r.pauseState(); !paused {
+					a.pushProgress(r, r.progressBody())
+					if a.cfg.Events != nil {
+						p := r.scanner.Progress()
+						a.emit(Event{Kind: EvScanProgress, Path: r.path, Ms: r.elapsedMs(),
+							Totals: &proto.ScanTotals{Alloc: p.Alloc, Apparent: p.Apparent, Files: p.Files, Dirs: p.Dirs}})
+					}
 				}
-				a.pushProgress(r, r.progressBody())
-				if a.cfg.Events != nil {
-					p := r.scanner.Progress()
-					a.emit(Event{Kind: EvScanProgress, Path: r.path, Ms: r.elapsedMs(),
-						Totals: &proto.ScanTotals{Alloc: p.Alloc, Apparent: p.Apparent, Files: p.Files, Dirs: p.Dirs}})
-				}
+				r.tickMu.Unlock()
 			case <-stopTick:
 				return
 			}
@@ -689,6 +701,8 @@ func (a *Agent) setPaused(id uint64, paused bool) {
 		a.sendScanState(r)
 		return
 	}
+	r.tickMu.Lock()
+	defer r.tickMu.Unlock()
 	changed := r.setPause(paused)
 	a.sendScanState(r)
 	if changed {
@@ -703,6 +717,8 @@ func (a *Agent) resumeIfPaused(r *scanRun) {
 	if a.currentRun() != r {
 		return
 	}
+	r.tickMu.Lock()
+	defer r.tickMu.Unlock()
 	if r.setPause(false) {
 		a.sendScanState(r)
 		a.emitPause(r, false)
@@ -721,6 +737,9 @@ func (a *Agent) emitPause(r *scanRun, paused bool) {
 
 // sendScanState queues SCAN_STATE for the active viewer if it understands it.
 func (a *Agent) sendScanState(r *scanRun) {
+	if !r.live() {
+		return // an ended or ending scan has no pause state; never answer "not paused" for it
+	}
 	paused, ms := r.pauseState()
 	a.mu.Lock()
 	defer a.mu.Unlock()
