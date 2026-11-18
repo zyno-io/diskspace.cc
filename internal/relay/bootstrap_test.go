@@ -255,6 +255,10 @@ func TestResolveRejectsUnsafeTargets(t *testing.T) {
 // ---- shell checksum behavior (against a fake downloader) ----
 
 type bootstrapCase struct {
+	// everyTool: the case depends on which downloader or hasher the script
+	// picks, so it runs under each; the rest (URL and manifest validation)
+	// run once, keeping the subprocess load low enough for slow CI runners
+	everyTool           bool
 	skipChecksum        bool
 	hashFailure         bool
 	name, manifest, url string
@@ -265,18 +269,18 @@ func bootstrapCases(asset, digest string) []bootstrapCase {
 	url := ghPrefix + "v0.4.0/" + asset
 	valid := digest + "  " + asset + "\n"
 	return []bootstrapCase{
-		{name: "valid", manifest: valid, url: url, wantOK: true},
-		{name: "explicit-bypass-no-manifest", url: url, skipChecksum: true, wantOK: true},
-		{name: "explicit-bypass-hash-failure", manifest: valid, url: url, skipChecksum: true, hashFailure: true, wantOK: true},
+		{everyTool: true, name: "valid", manifest: valid, url: url, wantOK: true},
+		{everyTool: true, name: "explicit-bypass-no-manifest", url: url, skipChecksum: true, wantOK: true},
+		{everyTool: true, name: "explicit-bypass-hash-failure", manifest: valid, url: url, skipChecksum: true, hashFailure: true, wantOK: true},
 		{name: "explicit-bypass-wrong-host", url: strings.Replace(url, "github.com", "example.invalid", 1), skipChecksum: true},
 		{name: "explicit-bypass-wrong-platform", url: strings.Replace(url, asset, "diskspace_wrong_platform.zip", 1), skipChecksum: true},
-		{name: "crlf", manifest: strings.ReplaceAll(valid, "\n", "\r\n"), url: url, wantOK: true},
-		{name: "hash-command-failure", manifest: valid, url: url, hashFailure: true},
-		{name: "dot-prefix", manifest: strings.ToUpper(digest) + "  ./" + asset + "\n", url: url, wantOK: true},
-		{name: "binary-marker", manifest: digest + " *./" + asset + "\n", url: url, wantOK: true},
-		{name: "tampered", manifest: valid, url: url, tamper: true},
+		{everyTool: true, name: "crlf", manifest: strings.ReplaceAll(valid, "\n", "\r\n"), url: url, wantOK: true},
+		{everyTool: true, name: "hash-command-failure", manifest: valid, url: url, hashFailure: true},
+		{everyTool: true, name: "dot-prefix", manifest: strings.ToUpper(digest) + "  ./" + asset + "\n", url: url, wantOK: true},
+		{everyTool: true, name: "binary-marker", manifest: digest + " *./" + asset + "\n", url: url, wantOK: true},
+		{everyTool: true, name: "tampered", manifest: valid, url: url, tamper: true},
 		{name: "missing-entry", manifest: digest + "  diskspace_wrong_platform.zip\n", url: url},
-		{name: "missing-manifest", url: url},
+		{everyTool: true, name: "missing-manifest", url: url},
 		{name: "duplicate-entry", manifest: valid + valid, url: url},
 		{name: "duplicate-alias", manifest: valid + digest + "  ./" + asset + "\n", url: url},
 		{name: "malformed-digest", manifest: strings.Repeat("g", 64) + "  " + asset + "\n", url: url},
@@ -300,13 +304,19 @@ func TestShellBootstrapChecksums(t *testing.T) {
 	archive := fakeArchive(t)
 	digest := fmt.Sprintf("%x", sha256.Sum256(archive))
 	asset := fmt.Sprintf("diskspace_%s_%s.tar.gz", runtime.GOOS, runtime.GOARCH)
+	first := true
 	for _, downloader := range []string{"curl", "wget"} {
 		for _, hasher := range []string{"sha256sum", "shasum", "openssl"} {
 			hashPath, err := exec.LookPath(hasher)
 			if err != nil {
 				continue
 			}
+			all := first
+			first = false
 			for _, tc := range bootstrapCases(asset, digest) {
+				if !all && !tc.everyTool {
+					continue
+				}
 				t.Run(downloader+"/"+hasher+"/"+tc.name, func(t *testing.T) {
 					t.Parallel()
 					dir := t.TempDir()
@@ -364,7 +374,9 @@ esac
 						_ = os.Remove(filepath.Join(bin, "tar"))
 						writeFixture(t, filepath.Join(bin, "tar"), []byte("#!/bin/sh\necho EXTRACTED_UNVERIFIED\nexit 99\n"))
 					}
-					ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+					// generous: under -race on a loaded macOS runner each case starts
+					// ~15 processes, and shasum is a Perl script
+					ctx, cancel := context.WithTimeout(t.Context(), 60*time.Second)
 					defer cancel()
 					args := []string{"-s", "--"}
 					skipExpected := "0"
@@ -376,6 +388,8 @@ esac
 					cmd := exec.CommandContext(ctx, "/bin/sh", args...)
 					cmd.Env = append(os.Environ(), "PATH="+bin, "FIXTURE="+dir, "EXPECT_SKIP_CHECKSUM="+skipExpected)
 					cmd.Stdin = strings.NewReader(script)
+					// the timeout kills only sh; don't wait on its children's pipes
+					cmd.WaitDelay = 5 * time.Second
 					var stderr bytes.Buffer
 					cmd.Stderr = &stderr
 					stdout, err := cmd.Output()
