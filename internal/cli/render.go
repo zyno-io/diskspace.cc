@@ -386,6 +386,7 @@ func (r *Renderer) Event(ev session.Event) {
 		r.mu.Unlock()
 	case session.EvDeleteDone:
 		r.mu.Lock()
+		r.status = "" // the "Deleting…" status is over
 		r.lineLocked(r.o.Out, ev.Message)
 		r.mu.Unlock()
 	case session.EvIdle:
