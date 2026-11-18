@@ -12,6 +12,7 @@ import { KIND_BUCKET, KIND_DIR, KIND_FILE, KIND_SYNTH, type TreeStore } from "..
 import { fileCategory, hueCss } from "../viz/colors";
 import { dirHue } from "../viz/layout";
 import type { Controller } from "./controller";
+import { longPress } from "./longpress";
 
 const ROW = 28;
 const INDENT = 14;
@@ -59,6 +60,8 @@ export class ListView {
   private ro: ResizeObserver;
   private disposers: (() => void)[] = [];
   private loadingFiles = new Set<number>();
+  /** bumped when the deletion queue changes (part of each row's key) */
+  private qv = 0;
 
   constructor(
     private host: HTMLDivElement,
@@ -106,6 +109,13 @@ export class ListView {
     this.disposers.push(
       effect(() => {
         ctl.hovered.value;
+        this.render();
+      }),
+    );
+    this.disposers.push(
+      effect(() => {
+        ctl.queue.value;
+        this.qv++;
         this.render();
       }),
     );
@@ -277,8 +287,29 @@ export class ListView {
     el.addEventListener("pointerenter", () => {
       if (r.node >= 0) this.ctl.hovered.value = r.node;
     });
+    el.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      this.openMenu(r.node, e.clientX, e.clientY, false);
+    });
+    this.disposers.push(longPress(el, (x, y) => this.openMenu(r.node, x, y, false)));
     this.host.appendChild(el);
     return r;
+  }
+
+  private openMenu(node: number, x: number, y: number, keyboard: boolean): void {
+    if (node < 0) return;
+    this.ctl.selected.value = node;
+    this.ctl.menu.value = { node, x, y, keyboard };
+  }
+
+  /** Shift+F10 / Menu key: open the menu under the selected row */
+  private menuForSelection(): void {
+    const sel = this.ctl.selected.peek();
+    const i = this.indexOf(sel);
+    if (i < 0) return;
+    const r = this.host.getBoundingClientRect();
+    const top = r.top + i * ROW - this.host.scrollTop;
+    this.openMenu(sel, r.left + 28 + this.depthOf[i] * INDENT, Math.min(r.bottom, Math.max(r.top, top + ROW)), true);
   }
 
   private zoomInto(node: number): void {
@@ -310,7 +341,7 @@ export class ListView {
       const n = this.flat[i];
       const d = this.depthOf[i];
       if (n === sel) activeId = r.el.id;
-      const key = `${i}:${n}:${st.touched[n]}:${st.parent[n] >= 0 ? st.touched[st.parent[n]] : 0}:${units}:${this.expanded.has(n) ? 1 : 0}:${n === sel ? 1 : 0}:${this.loadingFiles.has(st.parent[n]) ? 1 : 0}`;
+      const key = `${i}:${n}:${st.touched[n]}:${st.parent[n] >= 0 ? st.touched[st.parent[n]] : 0}:${units}:${this.expanded.has(n) ? 1 : 0}:${n === sel ? 1 : 0}:${this.loadingFiles.has(st.parent[n]) ? 1 : 0}:${this.qv}`;
       if (force || r.key !== key) {
         r.key = key;
         r.node = n;
@@ -335,7 +366,11 @@ export class ListView {
     const size = st.size(n);
     const p = st.parent[n];
     const pSize = p >= 0 ? (p === st.root && st.synth >= 0 ? st.size(p) + st.size(st.synth) : st.size(p)) : 0;
-    r.el.className = `row${isDir ? " dir" : ""}${open ? " open" : ""}${selected ? " sel" : ""}${kind === KIND_BUCKET || denied || other ? " muted" : ""}`;
+    const queue = this.ctl.queueSet.peek();
+    const queued = queue.has(n);
+    let covered = false;
+    if (!queued && queue.size) for (let k = p; k >= 0 && !covered; k = st.parent[k]) covered = queue.has(k);
+    r.el.className = `row${isDir ? " dir" : ""}${open ? " open" : ""}${selected ? " sel" : ""}${kind === KIND_BUCKET || denied || other ? " muted" : ""}${queued ? " queued" : covered ? " covered" : ""}`;
     r.el.setAttribute("aria-level", String(d + 1));
     r.el.setAttribute("aria-selected", selected ? "true" : "false");
     if (expandable) r.el.setAttribute("aria-expanded", open ? "true" : "false");
@@ -351,8 +386,9 @@ export class ListView {
     } else label = st.names[n] || st.rootPath;
     if (denied) label += " (no access)";
     else if (other) label += st.childFlags(n) & 1 ? " (other volume)" : " (skipped)";
+    else if (st.isStale(n)) label += " (partly deleted · scan again)";
     r.label.textContent = label;
-    r.label.title = kind === KIND_SYNTH ? "Used on this volume but outside the scan: other volumes, local snapshots, purgeable space" : label;
+    r.label.title = kind === KIND_SYNTH ? "Used on this volume but outside the scan: other volumes, local snapshots, purgeable space" : queued ? `${label} (in the deletion queue)` : label;
 
     const showMore = kind === KIND_BUCKET && st.hiddenFiles(p) > 0 && st.hasRecord(p);
     r.more.hidden = !showMore;
@@ -388,6 +424,17 @@ export class ListView {
     if (this.count === 0) return;
     const st = this.ctl.store;
     const sel = this.ctl.selected.peek();
+    if (e.key === "ContextMenu" || (e.key === "F10" && e.shiftKey)) {
+      e.preventDefault();
+      this.menuForSelection();
+      return;
+    }
+    if ((e.key === "Delete" || e.key === "Backspace") && sel >= 0 && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      e.preventDefault();
+      const why = this.ctl.toggleQueue(sel);
+      if (why) this.ctl.flash(why);
+      return;
+    }
     let i = this.indexOf(sel);
     const go = (j: number) => {
       j = Math.max(0, Math.min(this.count - 1, j));

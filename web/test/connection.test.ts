@@ -77,7 +77,7 @@ describe("ViewerConnection against a simulated agent", () => {
     const hello = await a.open(t.sockets[0].sent[1]);
     expect(hello[0]).toBe(0); // codec 0
     expect(hello[1]).toBe(MSG.CLIENT_HELLO);
-    expect(JSON.parse(new TextDecoder().decode(hello.subarray(2)))).toEqual({ proto: 1, ua: "test-ua", caps: { zstdStream: true, scanState: true } });
+    expect(JSON.parse(new TextDecoder().decode(hello.subarray(2)))).toEqual({ proto: 1, ua: "test-ua", caps: { zstdStream: true, scanState: true, del: true } });
   });
 
   it("requires STREAM_INIT first and AGENT_INFO as key confirmation", async () => {
@@ -334,5 +334,42 @@ describe("pause extension", () => {
     t.sockets[0].push(await t.agents[0].json(0x6b));
     await until(() => t.states().includes("error"));
     expect(t.sockets[0].closedByClient).toBe(4402);
+  });
+});
+
+describe("delete extension", () => {
+  it("sends DELETE_REQ and DELETE_CANCEL as JSON control messages", async () => {
+    const t = setup();
+    t.conn.connect();
+    await t.start();
+    await until(() => t.states().includes("connected"));
+    const before = t.sockets[0].sent.length;
+    const req = { reqId: 9, scanId: 3, mode: "trash" as const, items: [{ dir: 12 }, { parent: 4, name: "a.mov" }] };
+    t.conn.handle({ t: "deleteReq", req });
+    t.conn.handle({ t: "deleteCancel", job: 5 });
+    await until(() => t.sockets[0].sent.length === before + 2);
+    await t.agents[0].open(t.sockets[0].sent[1]); // CLIENT_HELLO (seq 0)
+    const a = await t.agents[0].open(t.sockets[0].sent[before]);
+    expect(a[1]).toBe(MSG.DELETE_REQ);
+    expect(JSON.parse(new TextDecoder().decode(a.subarray(2)))).toEqual(req);
+    const b = await t.agents[0].open(t.sockets[0].sent[before + 1]);
+    expect(b[1]).toBe(MSG.DELETE_CANCEL);
+    expect(JSON.parse(new TextDecoder().decode(b.subarray(2)))).toEqual({ job: 5 });
+  });
+
+  it("dispatches DELETE_STATUS at once and DELETED in order behind the scan's end", async () => {
+    const t = setup();
+    t.conn.connect();
+    await t.start();
+    await until(() => t.states().includes("connected"));
+    const a = t.agents[0], s = t.sockets[0];
+    s.push(await a.json(MSG.SCAN_STARTED, { scanId: 1, path: "/x", rootName: "x", volume: null, opts: {} }));
+    s.push(await a.json(MSG.SCAN_DONE, { scanId: 1, totals: { alloc: 0, apparent: 0, files: 0, dirs: 0 }, denied: 0, errors: 0, vanished: 0, skippedMounts: 0, hardlinksDeduped: 0, folded: 0, ms: 1 }));
+    s.push(await a.json(MSG.DELETED, { scanId: 1, job: 2, items: [{ dir: 3, freedAlloc: 10, freedApparent: 9, files: 1, dirs: 0 }] }));
+    s.push(await a.json(MSG.DELETE_STATUS, { job: 2, reqId: 7, state: "done", total: 1, done: 1, freedAlloc: 10 }));
+    await until(() => t.events.some((e) => e.t === "deleteStatus") && t.events.some((e) => e.t === "deleted"));
+    const order = t.events.map((e) => e.t).filter((k) => k === "scanDone" || k === "deleted");
+    expect(order).toEqual(["scanDone", "deleted"]);
+    expect((t.events.find((e) => e.t === "deleted") as any).v.items[0].dir).toBe(3);
   });
 });

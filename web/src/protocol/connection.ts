@@ -258,6 +258,14 @@ export class ViewerConnection {
       case MSG.REPLAY_DONE:
         this.enqueue({ t: "replayDone" });
         break;
+      case MSG.DELETE_STATUS:
+        // not tied to the tree: never waits behind paced NODES
+        this.o.post({ t: "deleteStatus", v: m.v });
+        break;
+      case MSG.DELETED:
+        // tombstones apply to the tree: ordered after the NODES and end message before them
+        this.enqueue({ t: "deleted", v: m.v });
+        break;
       case MSG.ERROR:
         this.o.post({ t: "error", v: m.v });
         break;
@@ -435,6 +443,12 @@ export class ViewerConnection {
         break;
       case "scanPause":
         this.sendBody(msg.scanPause(c.scanId, c.paused));
+        break;
+      case "deleteReq":
+        this.sendBody(msg.deleteReq(c.req));
+        break;
+      case "deleteCancel":
+        this.sendBody(msg.deleteCancel(c.job));
         break;
       case "browse":
         this.sendBody(msg.browse(c.reqId, c.path));

@@ -5,8 +5,11 @@
 // tree lazily (parents always announce child ids before the child's own DIR
 // record), streams it as NodeBatch messages over ~10 s, sends PROGRESS at 4 Hz
 // and SCAN_DONE with denied counts, and supports cancel, browse and dirFiles.
+// Deletion requests run the whole flow (preparing, awaiting approval "on the
+// host", running, DELETED + done); items under ~/Library/Containers fail with
+// "denied" so the partial-result dialog can be seen too.
 
-import type { AgentInfo, BrowseResult, ChildRec, ConnState, DirFiles, DirRec, FileRec, NodeRecord, ScanOptions, Session, SessionEvents, Volume } from "./types";
+import type { AgentInfo, BrowseResult, ChildRec, ConnState, DeletedItem, DeleteReq, DeleteResult, DeleteStatus, DirFiles, DirRec, FileRec, NodeRecord, ScanOptions, Session, SessionEvents, Volume } from "./types";
 import { CHILD_FLAG, DIR_FLAG, PROTO_VERSION } from "./types";
 
 export interface MockOptions {
@@ -21,6 +24,8 @@ export interface MockOptions {
   demoState?: string | null;
   /** scan this path automatically once connected (agent autoScan) */
   autoScan?: string | null;
+  /** ms until a delete request is "approved on the host"; "no" declines it (default 3500) */
+  approve?: number | "no";
 }
 
 // ---- deterministic rng --------------------------------------------------------
@@ -591,9 +596,15 @@ export class MockSession implements Session {
       autoScan: o.autoScan ?? null,
       volumes: DEMO_VOLUMES,
       scan: null,
-      features: { pause: true },
+      features: { pause: true, delete: { available: true, confirm: "terminal", trash: true, maxItems: 500 } },
+      deleting: null,
     };
   }
+
+  /** per page load: the demo restarts its scan ids, so a saved queue must not outlive it */
+  readonly id = `demo-${Date.now().toString(36)}`;
+  private job = 0;
+  private del: { job: number; req: DeleteReq; status: DeleteStatus; stop: boolean; timer: number } | null = null;
 
   private later(ms: number, fn: () => void): void {
     this.timers.push(window.setTimeout(fn, ms));
@@ -716,10 +727,10 @@ export class MockSession implements Session {
   }
 
   scanCancel(scanId: number): void {
-    if (scanId !== this.scanId || !this.gen) return;
+    // the generated tree stays (Show all, deletions); only a running scan can be canceled
+    if (scanId !== this.scanId || !this.gen || !this.scanTimer) return;
     this.stopScan();
     this.paused = false;
-    this.gen = null;
     this.later(80, () => this.ev?.scanEnded({ scanId, reason: "canceled" }));
   }
 
@@ -775,6 +786,104 @@ export class MockSession implements Session {
     );
   }
 
+  // ---- deletion -------------------------------------------------------------------
+
+  deleteRequest(req: DeleteReq): void {
+    const ev = this.ev;
+    const g = this.gen;
+    if (!ev || this.closed) return;
+    const job = ++this.job;
+    const base: DeleteStatus = { job, reqId: req.reqId, state: "preparing", total: req.items.length, done: 0, freedAlloc: 0 };
+    const refuse = (state: "refused" | "failed", code: string) => this.later(80, () => ev.deleteStatus({ ...base, state, code }));
+    if (this.del) return refuse("failed", "busy");
+    if (!g || req.scanId !== this.scanId) return refuse("failed", "invalid");
+    if (this.scanTimer) return refuse("refused", "scanning");
+    const d = { job, req, status: base, stop: false, timer: 0 };
+    this.del = d;
+    const send = (st: Partial<DeleteStatus>) => {
+      d.status = { ...d.status, ...st };
+      this.info.deleting = { job, state: d.status.state, done: d.status.done, total: d.status.total };
+      ev.deleteStatus(d.status);
+    };
+    const finish = (st: Partial<DeleteStatus>) => {
+      window.clearTimeout(d.timer);
+      if (this.del === d) this.del = null;
+      send(st);
+      this.info.deleting = null;
+    };
+    this.later(120, () => send({}));
+    d.timer = window.setTimeout(() => {
+      send({ state: "awaiting" });
+      const wait = this.o.approve ?? 3500;
+      d.timer = window.setTimeout(() => {
+        if (wait === "no") return finish({ state: "refused", code: "declined" });
+        this.runDelete(d, g, send, finish);
+      }, wait === "no" ? 2500 : wait);
+    }, 600);
+  }
+
+  private runDelete(d: NonNullable<MockSession["del"]>, g: Gen, send: (s: Partial<DeleteStatus>) => void, finish: (s: Partial<DeleteStatus>) => void): void {
+    const ev = this.ev!;
+    const items = d.req.items;
+    const results: DeleteResult[] = [];
+    const deleted: DeletedItem[] = [];
+    const tot = subtreeTotals(g);
+    let i = 0;
+    let freed = 0;
+    const cur = (k: number) => {
+      const it = items[k];
+      return "dir" in it ? g.path(it.dir, this.scanPath) : g.path(it.parent, this.scanPath) + "/" + it.name;
+    };
+    send({ state: "running", current: items.length ? cur(0) : undefined });
+    const step = () => {
+      if (i >= items.length || d.stop) {
+        for (let k = i; k < items.length; k++) results.push({ i: k, ok: false, code: "canceled", freedAlloc: 0, files: 0, dirs: 0 });
+        if (deleted.length) ev.deleted({ scanId: d.req.scanId, job: d.job, items: deleted });
+        finish({ state: "done", done: i, freedAlloc: freed, current: undefined, results });
+        return;
+      }
+      const it = items[i];
+      const path = cur(i);
+      if (/\/Library\/Containers(\/|$)/.test(path)) {
+        results.push({ i, ok: false, code: "denied", freedAlloc: 0, files: 0, dirs: 0 });
+      } else if ("dir" in it) {
+        const id = it.dir;
+        if (id <= 0 || id >= g.nextId) results.push({ i, ok: false, code: "not_found", freedAlloc: 0, files: 0, dirs: 0 });
+        else {
+          freed += tot.alloc[id];
+          results.push({ i, ok: true, freedAlloc: tot.alloc[id], files: tot.files[id], dirs: tot.dirs[id] });
+          deleted.push({ dir: id, freedAlloc: tot.alloc[id], freedApparent: tot.apparent[id], files: tot.files[id], dirs: tot.dirs[id] });
+        }
+      } else {
+        const f = g.listed.get(it.parent)?.find((x) => x.name === it.name);
+        if (!f) results.push({ i, ok: false, code: "not_found", freedAlloc: 0, files: 0, dirs: 0 });
+        else {
+          freed += f.alloc;
+          results.push({ i, ok: true, freedAlloc: f.alloc, files: 1, dirs: 0 });
+          deleted.push({ parent: it.parent, name: it.name, freedAlloc: f.alloc, freedApparent: f.apparent });
+        }
+      }
+      i++;
+      send({ done: i, freedAlloc: freed, current: i < items.length ? cur(i) : undefined });
+      d.timer = window.setTimeout(step, 450 + Math.min(900, items.length * 40));
+    };
+    d.timer = window.setTimeout(step, 700);
+  }
+
+  deleteCancel(job: number): void {
+    const d = this.del;
+    if (!d || d.job !== job || !this.ev) return;
+    if (d.status.state === "running") {
+      d.stop = true; // stop after the current item
+      return;
+    }
+    window.clearTimeout(d.timer);
+    this.del = null;
+    this.info.deleting = null;
+    const ev = this.ev;
+    this.later(60, () => ev.deleteStatus({ ...d.status, state: "refused", code: "canceled" }));
+  }
+
   applied(_wireBytes: number): void {}
 
   takeOver(): void {
@@ -788,6 +897,8 @@ export class MockSession implements Session {
 
   close(): void {
     this.closed = true;
+    if (this.del) window.clearTimeout(this.del.timer);
+    this.del = null;
     this.stopScan();
     for (const t of this.timers) window.clearTimeout(t);
     this.timers = [];
@@ -798,6 +909,21 @@ export class MockSession implements Session {
   static stateLabel(s: ConnState): string {
     return s.s;
   }
+}
+
+/** per-dir subtree totals of a generated tree (child ids are always above their parent's) */
+function subtreeTotals(g: Gen): { alloc: Float64Array; apparent: Float64Array; files: Float64Array; dirs: Float64Array } {
+  const n = g.nextId;
+  const alloc = g.ownAlloc.slice(0, n), apparent = g.ownApparent.slice(0, n), files = g.ownFiles.slice(0, n);
+  const dirs = new Float64Array(n);
+  for (let id = n - 1; id > 0; id--) {
+    const p = g.parent[id];
+    alloc[p] += alloc[id];
+    apparent[p] += apparent[id];
+    files[p] += files[id];
+    dirs[p] += dirs[id] + 1;
+  }
+  return { alloc, apparent, files, dirs };
 }
 
 function hash(s: string): number {

@@ -21,6 +21,8 @@ export const MSG = {
   DIR_FILES: 0x15,
   REPLAY_DONE: 0x16,
   SCAN_STATE: 0x17,
+  DELETE_STATUS: 0x18,
+  DELETED: 0x19,
   BYE: 0x7e,
   ERROR: 0x7f,
   // viewer → agent
@@ -33,6 +35,8 @@ export const MSG = {
   CREDIT: 0x87,
   PING: 0x88,
   SCAN_PAUSE: 0x89,
+  DELETE_REQ: 0x8a,
+  DELETE_CANCEL: 0x8b,
 } as const;
 
 // ---- flags (mirror internal/proto/records.go) --------------------------------
@@ -72,7 +76,75 @@ export interface AgentInfo {
   volumes: Volume[];
   scan: { id: number; state: "running" | "done" | "canceled" | "error"; paused?: boolean } | null;
   /** optional protocol extensions; absent from older agents. The viewer sends a matching message only if advertised. */
-  features?: { pause?: boolean };
+  features?: { pause?: boolean; delete?: DeleteFeature };
+  /** a deletion job in progress (any viewer's); absent or null when idle */
+  deleting?: { job: number; state: DeleteState; done: number; total: number } | null;
+}
+
+/** AGENT_INFO.features.delete: the agent accepts DELETE_REQ / DELETE_CANCEL */
+export interface DeleteFeature {
+  available: boolean;
+  /** why it is unavailable: "no_confirm" (no way to ask on the host) | "unsupported" */
+  reason?: string;
+  /** where the host approves: terminal prompt, desktop app dialog, Windows elevated console */
+  confirm?: "terminal" | "app" | "console" | string;
+  /** a Trash / Recycle Bin is available (else only permanent deletion) */
+  trash?: boolean;
+  maxItems?: number;
+}
+
+export type DeleteMode = "trash" | "permanent";
+export type DeleteState = "preparing" | "awaiting" | "running" | "done" | "refused" | "failed";
+
+/** one DELETE_REQ item: a scanned dir by wire id, or a listed file by its parent's wire id + name */
+export type DeleteItem = { dir: number } | { parent: number; name: string };
+
+/** DELETE_REQ (v2a 0x8A) */
+export interface DeleteReq {
+  reqId: number;
+  scanId: number;
+  mode: DeleteMode;
+  items: DeleteItem[];
+}
+
+/** per-item outcome; i indexes DeleteReq.items */
+export interface DeleteResult {
+  i: number;
+  ok: boolean;
+  code?: string;
+  message?: string;
+  freedAlloc: number;
+  files: number;
+  dirs: number;
+}
+
+/** DELETE_STATUS (a2v 0x18) */
+export interface DeleteStatus {
+  job: number;
+  reqId: number;
+  state: DeleteState;
+  where?: string;
+  /** item count */
+  total: number;
+  /** items finished */
+  done: number;
+  freedAlloc: number;
+  /** agent-resolved path of the item being processed */
+  current?: string;
+  code?: string;
+  message?: string;
+  results?: DeleteResult[];
+}
+
+export type DeletedItem =
+  | { dir: number; partial?: boolean; freedAlloc: number; freedApparent: number; files: number; dirs: number }
+  | { parent: number; name: string; freedAlloc: number; freedApparent: number };
+
+/** DELETED (a2v 0x19): tombstones for the scan's tree */
+export interface Deleted {
+  scanId: number;
+  job: number;
+  items: DeletedItem[];
 }
 
 export interface ScanOptions {
@@ -237,17 +309,24 @@ export interface SessionEvents {
   scanEnded(m: ScanEnded): void;
   scanState(m: ScanState): void;
   replayDone(): void;
+  deleteStatus(m: DeleteStatus): void;
+  deleted(m: Deleted): void;
   bye(m: ByeMsg): void;
   error(m: ErrorMsg): void;
 }
 
 export interface Session {
+  /** stable id of this session (the link's sid) for per-session browser storage */
+  readonly id?: string;
   /** start connecting; events are delivered to the handlers */
   start(events: SessionEvents): void;
   scanStart(path: string, opts?: ScanOptions): void;
   scanCancel(scanId: number): void;
   /** idempotent set (not a toggle); only call when AgentInfo.features.pause */
   scanPause(scanId: number, paused: boolean): void;
+  /** only call when AgentInfo.features.delete */
+  deleteRequest(req: DeleteReq): void;
+  deleteCancel(job: number): void;
   browse(path: string): Promise<BrowseResult>;
   dirFiles(scanId: number, dirId: number, limit?: number): Promise<DirFiles>;
   /** flow control: report ciphertext bytes the UI has finished applying */

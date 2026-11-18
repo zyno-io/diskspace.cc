@@ -62,7 +62,8 @@ function boot(): void {
   const demo = params.has("demo") || path === "/demo" || path === "/demo/";
   let session: Session;
   if (demo) {
-    session = new MockSession({ demoState: params.get("state"), autoScan: params.get("scan") });
+    const approve = params.get("approve");
+    session = new MockSession({ demoState: params.get("state"), autoScan: params.get("scan"), approve: approve === "no" ? "no" : approve ? Number(approve) : undefined });
   } else {
     const m = /^\/s\/([A-Za-z0-9_-]{8,64})\/?$/.exec(path);
     const sid = m?.[1] ?? "";

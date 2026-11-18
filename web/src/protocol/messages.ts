@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // JSON message encode/decode and plaintext framing.
 import { MSG, PROTO_VERSION } from "./types";
-import type { AgentInfo, BrowseResult, ByeMsg, ErrorMsg, Progress, ScanDone, ScanEnded, ScanOptions, ScanStarted, ScanState } from "./types";
+import type { AgentInfo, BrowseResult, ByeMsg, Deleted, DeleteReq, DeleteStatus, ErrorMsg, Progress, ScanDone, ScanEnded, ScanOptions, ScanStarted, ScanState } from "./types";
 import { ProtocolError } from "./varint";
 
 const te = new TextEncoder();
@@ -26,7 +26,7 @@ export function framePlain(body: Uint8Array): Uint8Array {
 }
 
 export const msg = {
-  clientHello: (ua: string) => encodeMsg(MSG.CLIENT_HELLO, { proto: PROTO_VERSION, ua, caps: { zstdStream: true, scanState: true } }),
+  clientHello: (ua: string) => encodeMsg(MSG.CLIENT_HELLO, { proto: PROTO_VERSION, ua, caps: { zstdStream: true, scanState: true, del: true } }),
   getRoots: () => encodeMsg(MSG.GET_ROOTS),
   browse: (reqId: number, path: string) => encodeMsg(MSG.BROWSE, { reqId, path }),
   scanStart: (path: string, o: ScanOptions = {}) =>
@@ -35,6 +35,8 @@ export const msg = {
   dirFilesReq: (reqId: number, scanId: number, dirId: number, limit: number) =>
     encodeMsg(MSG.DIR_FILES_REQ, { reqId, scanId, dirId, limit: Math.max(1, Math.min(10000, Math.floor(limit))) }),
   scanPause: (scanId: number, paused: boolean) => encodeMsg(MSG.SCAN_PAUSE, { scanId, paused }),
+  deleteReq: (r: DeleteReq) => encodeMsg(MSG.DELETE_REQ, { reqId: r.reqId, scanId: r.scanId, mode: r.mode, items: r.items }),
+  deleteCancel: (job: number) => encodeMsg(MSG.DELETE_CANCEL, { job }),
   credit: (n: number) => encodeMsg(MSG.CREDIT, { n }),
   ping: () => encodeMsg(MSG.PING),
 };
@@ -47,12 +49,14 @@ export type A2VJson =
   | { type: typeof MSG.SCAN_DONE; v: ScanDone }
   | { type: typeof MSG.SCAN_ENDED; v: ScanEnded }
   | { type: typeof MSG.SCAN_STATE; v: ScanState }
+  | { type: typeof MSG.DELETE_STATUS; v: DeleteStatus }
+  | { type: typeof MSG.DELETED; v: Deleted }
   | { type: typeof MSG.BYE; v: ByeMsg }
   | { type: typeof MSG.ERROR; v: ErrorMsg }
   | { type: typeof MSG.ROOTS; v: unknown }
   | { type: typeof MSG.PONG | typeof MSG.REPLAY_DONE | typeof MSG.STREAM_INIT; v: null };
 
-const JSON_TYPES = new Set<number>([MSG.AGENT_INFO, MSG.ROOTS, MSG.BROWSE_RESULT, MSG.SCAN_STARTED, MSG.PROGRESS, MSG.SCAN_DONE, MSG.SCAN_ENDED, MSG.SCAN_STATE, MSG.BYE, MSG.ERROR]);
+const JSON_TYPES = new Set<number>([MSG.AGENT_INFO, MSG.ROOTS, MSG.BROWSE_RESULT, MSG.SCAN_STARTED, MSG.PROGRESS, MSG.SCAN_DONE, MSG.SCAN_ENDED, MSG.SCAN_STATE, MSG.DELETE_STATUS, MSG.DELETED, MSG.BYE, MSG.ERROR]);
 const BARE_TYPES = new Set<number>([MSG.PONG, MSG.REPLAY_DONE, MSG.STREAM_INIT]);
 
 /** Decode a JSON-payload a2v body. NODES / DIR_FILES are handled by codec.ts. */
