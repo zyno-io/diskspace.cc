@@ -15,14 +15,37 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// isMountRoot reports whether name in dfd is the root of a mount (including a
-// bind mount on the same device), when the kernel can tell (Linux 5.8+).
-func isMountRoot(dfd int, name string) bool {
+// isMountRoot reports whether name in dfd (canonical path canon) is the root
+// of a mount, including a bind mount on the same device: STATX_ATTR_MOUNT_ROOT
+// (Linux 5.8+), else differing mount ids from name_to_handle_at, else canon
+// listed in the current mountinfo.
+func isMountRoot(dfd int, name, canon string, mounts func() map[string]struct{}) bool {
 	var stx unix.Statx_t
-	if unix.Statx(dfd, name, unix.AT_SYMLINK_NOFOLLOW|unix.AT_STATX_DONT_SYNC, unix.STATX_TYPE, &stx) != nil {
+	err := unix.Statx(dfd, name, unix.AT_SYMLINK_NOFOLLOW|unix.AT_STATX_DONT_SYNC, unix.STATX_TYPE, &stx)
+	if err == nil && stx.Attributes_mask&unix.STATX_ATTR_MOUNT_ROOT != 0 {
+		return stx.Attributes&unix.STATX_ATTR_MOUNT_ROOT != 0
+	}
+	_, pm, err1 := unix.NameToHandleAt(dfd, ".", 0)
+	_, cm, err2 := unix.NameToHandleAt(dfd, name, 0)
+	if err1 == nil && err2 == nil {
+		return pm != cm
+	}
+	if mounts == nil {
 		return false
 	}
-	return stx.Attributes_mask&unix.STATX_ATTR_MOUNT_ROOT != 0 && stx.Attributes&unix.STATX_ATTR_MOUNT_ROOT != 0
+	_, ok := mounts()[canon]
+	return ok
+}
+
+// freshMounts returns a lazy reader of the current mount points.
+func freshMounts() func() map[string]struct{} {
+	var m map[string]struct{}
+	return func() map[string]struct{} {
+		if m == nil {
+			m = parseMountpoints()
+		}
+		return m
+	}
 }
 
 const (
@@ -32,8 +55,8 @@ const (
 
 // trash moves the pinned target into a freedesktop.org Trash on the target's
 // filesystem: $XDG_DATA_HOME/Trash (default <home>/.local/share/Trash) when
-// that is on the same device, else $topdir/.Trash/$uid (.Trash sticky, not a
-// symlink) or $topdir/.Trash-$uid. info/<n>.trashinfo is created with O_EXCL
+// that is on the same device, else $topdir/.Trash/$uid (.Trash root-owned,
+// sticky, not a symlink) or $topdir/.Trash-$uid. info/<n>.trashinfo is created with O_EXCL
 // first, then the target is renamed with RENAME_NOREPLACE into files/<n>, both
 // relative to no-follow directory fds; the info file is removed if the move
 // fails. Nothing crosses devices: with no usable Trash the result is
@@ -44,7 +67,12 @@ func (r *remover) trash(p *pinned, t *Target) (string, error) {
 		return "", rmErr(CodeTrashUnavailable, t.Path, err)
 	}
 	uid, gid := int(hst.Uid), int(hst.Gid)
-	dataHome := os.Getenv("XDG_DATA_HOME")
+	// XDG_DATA_HOME is this process's; it only describes the Trash owner when
+	// no other user's home was given.
+	dataHome := ""
+	if r.opts.Home == "" {
+		dataHome = os.Getenv("XDG_DATA_HOME")
+	}
 	if !filepath.IsAbs(dataHome) {
 		dataHome = filepath.Join(home, ".local", "share")
 	}
@@ -68,12 +96,12 @@ func (r *remover) trash(p *pinned, t *Target) (string, error) {
 		return "", rmErr(CodeTrashUnavailable, t.Path, err)
 	}
 	defer unix.Close(tfd)
-	filesFd, err := trashSubdir(tfd, "files", uid, gid, t.ID.Dev)
+	filesFd, err := ensureSubdir(tfd, "files", uid, gid, t.ID.Dev)
 	if err != nil {
 		return "", rmErr(CodeTrashUnavailable, t.Path, err)
 	}
 	defer unix.Close(filesFd)
-	infoFd, err := trashSubdir(tfd, "info", uid, gid, t.ID.Dev)
+	infoFd, err := ensureSubdir(tfd, "info", uid, gid, t.ID.Dev)
 	if err != nil {
 		return "", rmErr(CodeTrashUnavailable, t.Path, err)
 	}
@@ -127,33 +155,6 @@ func (r *remover) trash(p *pinned, t *Target) (string, error) {
 		return where, nil
 	}
 	return "", rmErr(CodeTrashUnavailable, t.Path, errors.New("no free name in the Trash"))
-}
-
-// trashSubdir opens (creating if needed) files/ or info/ in the Trash fd,
-// without following a symlink, and checks owner and device.
-func trashSubdir(tfd int, name string, uid, gid int, dev uint64) (int, error) {
-	err := unix.Mkdirat(tfd, name, 0o700)
-	created := err == nil
-	if err != nil && !errors.Is(err, unix.EEXIST) {
-		return -1, err
-	}
-	fd, err := openatDir(tfd, name)
-	if err != nil {
-		return -1, err
-	}
-	if created && unix.Geteuid() == 0 && uid != 0 {
-		unix.Fchown(fd, uid, gid)
-	}
-	var st unix.Stat_t
-	if err := unix.Fstat(fd, &st); err != nil {
-		unix.Close(fd)
-		return -1, err
-	}
-	if int(st.Uid) != uid || devOf(&st) != dev {
-		unix.Close(fd)
-		return -1, errors.New("Trash " + name + " is not usable")
-	}
-	return fd, nil
 }
 
 // nearestDev returns the device of path or of its nearest existing ancestor.
@@ -217,7 +218,7 @@ func mountTop(canon string, dev uint64) string {
 func topTrash(topdir string, uid, gid int) string {
 	shared := filepath.Join(topdir, ".Trash")
 	var st unix.Stat_t
-	if unix.Lstat(shared, &st) == nil && st.Mode&unix.S_IFMT == unix.S_IFDIR && st.Mode&unix.S_ISVTX != 0 {
+	if unix.Lstat(shared, &st) == nil && st.Mode&unix.S_IFMT == unix.S_IFDIR && st.Mode&unix.S_ISVTX != 0 && st.Uid == 0 {
 		d := filepath.Join(shared, strconv.Itoa(uid))
 		if ensureDir(d, 0o700, uid, gid) == nil {
 			return d

@@ -14,9 +14,10 @@ import (
 	"time"
 )
 
-// The Trash goes under the fixture's home via XDG_DATA_HOME.
+// The fixture's home (opts.Home) holds the Trash; this process's
+// XDG_DATA_HOME must then be ignored.
 func setTestTrash(t *testing.T, f *fixture, o *RemoveOptions) {
-	t.Setenv("XDG_DATA_HOME", filepath.Join(f.home, "data"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(f.home, "not-this-one"))
 }
 
 func checkTrashNames(t *testing.T, wheres []string, name string) {
@@ -41,7 +42,13 @@ func TestTrashInfoPath(t *testing.T) {
 }
 
 // The .trashinfo records the percent-encoded original path and the date.
+// XDG_DATA_HOME places the Trash only when no other home is given.
 func TestTrashLinuxInfo(t *testing.T) {
+	t.Run("home", func(t *testing.T) { testTrashLinuxInfo(t, false) })
+	t.Run("xdg", func(t *testing.T) { testTrashLinuxInfo(t, true) })
+}
+
+func testTrashLinuxInfo(t *testing.T, xdg bool) {
 	f := newFixture(t)
 	name := "a b%é.txt"
 	writeFile(t, filepath.Join(f.root, name), 10)
@@ -50,11 +57,21 @@ func TestTrashLinuxInfo(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, err := Remove(context.Background(), tg, trashOpts(t, f, ModeTrash))
+	opts := trashOpts(t, f, ModeTrash)
+	trash := filepath.Join(f.home, ".local", "share", "Trash")
+	if xdg {
+		t.Setenv("HOME", f.home)
+		t.Setenv("XDG_DATA_HOME", filepath.Join(f.home, "data"))
+		opts.Home = ""
+		trash = filepath.Join(f.home, "data", "Trash")
+	}
+	res, err := Remove(context.Background(), tg, opts)
 	if err != nil {
 		t.Fatal(err)
 	}
-	trash := filepath.Join(f.home, "data", "Trash")
+	if exists(filepath.Join(f.home, "not-this-one")) {
+		t.Fatal("used this process's XDG_DATA_HOME for another home")
+	}
 	if res.Where != filepath.Join(trash, "files", name) {
 		t.Fatalf("where=%q", res.Where)
 	}
@@ -81,8 +98,8 @@ func TestTrashLinuxInfo(t *testing.T) {
 // A symlinked Trash is refused and nothing moves.
 func TestTrashLinuxSymlinkedTrash(t *testing.T) {
 	f := newFixture(t)
-	mkdirs(t, filepath.Join(f.home, "data"))
-	if err := os.Symlink(f.outside, filepath.Join(f.home, "data", "Trash")); err != nil {
+	mkdirs(t, filepath.Join(f.home, ".local", "share"))
+	if err := os.Symlink(f.outside, filepath.Join(f.home, ".local", "share", "Trash")); err != nil {
 		t.Fatal(err)
 	}
 	file := filepath.Join(f.root, "f")

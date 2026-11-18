@@ -7,6 +7,7 @@ package scan
 import (
 	"errors"
 	"path/filepath"
+	"strings"
 
 	"golang.org/x/sys/unix"
 )
@@ -132,12 +133,12 @@ func pin(t *Target) (*pinned, error) {
 	if !t.ID.IsZero() && id != t.ID || t.ftype != 0 && ftype != t.ftype {
 		return nil, rmErr(CodeChanged, t.Path, nil)
 	}
-	if id.Dev != p.pdev || isMountRoot(pfd, t.Name) {
-		return nil, rmErr(CodeMountPoint, t.Path, nil)
-	}
 	p.canon = t.Path
 	if real, err := filepath.EvalSymlinks(t.Parent); err == nil {
 		p.canon = joinPath(real, t.Name)
+	}
+	if id.Dev != p.pdev || isMountRoot(pfd, t.Name, p.canon, freshMounts()) {
+		return nil, rmErr(CodeMountPoint, t.Path, nil)
 	}
 	if t.Dir {
 		if id == b.RootID {
@@ -147,6 +148,11 @@ func pin(t *Target) (*pinned, error) {
 			return nil, rmErr(CodeProtected, t.Path, nil)
 		}
 	} else {
+		// A symlink standing where a protected folder is named (merged-/usr
+		// /bin, /lib64...) is protected too.
+		if b.protection().names(p.canon) {
+			return nil, rmErr(CodeProtected, t.Path, nil)
+		}
 		t.ID, t.ftype = id, ftype
 		t.Alloc, t.Apparent, t.Links = uint64(p.st.Blocks)*512, uint64(p.st.Size), uint64(p.st.Nlink)
 	}
@@ -204,6 +210,9 @@ func (r *remover) removeDirAt(pfd int, name, path string, want Identity, depth i
 			return false
 		}
 		dev := devOf(&self)
+		// Only our own removals count as progress: an entry that is listed
+		// but can't be found (delete pending, odd network filesystems) must
+		// not keep the passes going.
 		progress, eof := false, false
 		for !progress && !eof {
 			names, eof, err = readNames(fd, buf, names[:0])
@@ -220,14 +229,15 @@ func (r *remover) removeDirAt(pfd int, name, path string, want Identity, depth i
 				if _, bad := failed[n]; bad {
 					continue
 				}
-				if r.removeEntry(fd, n, joinPath(path, n), dev, depth) {
+				switch r.removeEntry(fd, n, joinPath(path, n), dev, depth) {
+				case entryRemoved:
 					progress = true
-					continue
+				case entryKept:
+					if failed == nil {
+						failed = map[string]struct{}{}
+					}
+					failed[n] = struct{}{}
 				}
-				if failed == nil {
-					failed = map[string]struct{}{}
-				}
-				failed[n] = struct{}{}
 			}
 		}
 		unix.Close(fd)
@@ -246,34 +256,36 @@ func (r *remover) removeDirAt(pfd int, name, path string, want Identity, depth i
 	return true
 }
 
-// removeEntry removes one entry of directory dfd (on device dev). It reports
-// whether the entry is gone.
-func (r *remover) removeEntry(dfd int, name, path string, dev uint64, depth int) bool {
+// removeEntry removes one entry of directory dfd (on device dev).
+func (r *remover) removeEntry(dfd int, name, path string, dev uint64, depth int) entryOutcome {
 	var st unix.Stat_t
 	if err := fstatat(dfd, name, &st); err != nil {
 		if errors.Is(err, unix.ENOENT) {
-			return true
+			return entryGone
 		}
 		r.fail(path, errCode(err), err)
-		return false
+		return entryKept
 	}
 	if st.Mode&unix.S_IFMT == unix.S_IFDIR {
-		if r.devOf(path, devOf(&st)) != dev || isMountRoot(dfd, name) {
+		if r.devOf(path, devOf(&st)) != dev || isMountRoot(dfd, name, r.canonOf(path), r.mounts) {
 			r.skip(path)
-			return false
+			return entryKept
 		}
-		return r.removeDirAt(dfd, name, path, statIdentity(&st), depth+1)
+		if r.removeDirAt(dfd, name, path, statIdentity(&st), depth+1) {
+			return entryRemoved
+		}
+		return entryKept
 	}
 	// A symlink is removed as the link itself.
 	if err := unlinkat(dfd, name, 0); err != nil {
 		if errors.Is(err, unix.ENOENT) {
-			return true
+			return entryGone
 		}
 		r.fail(path, errCode(err), err)
-		return false
+		return entryKept
 	}
 	r.removed(false, uint64(st.Blocks)*512, uint64(st.Size), st.Nlink <= 1)
-	return true
+	return entryRemoved
 }
 
 // readNames reads at least removeChunk names (or to the end) from fd.
@@ -298,21 +310,32 @@ func readNames(fd int, buf []byte, names []string) ([]string, bool, error) {
 	return names, false, nil
 }
 
-// ensureDir makes sure path is a real directory (not a symlink), creating it
-// with mode if missing, owned by uid (when uid >= 0; created directories are
-// handed to uid/gid when running as root).
+// ensureDir makes sure path is a real directory (not a symlink) owned by uid
+// (uid < 0: any owner), creating it with mode if missing. Creation and checks
+// go through a no-follow fd of the parent; a directory created while running
+// as root is handed to uid/gid, one that already existed is never chowned.
 func ensureDir(path string, mode uint32, uid, gid int) error {
+	pfd, err := openDir(filepath.Dir(path))
+	if err != nil {
+		return err
+	}
+	defer unix.Close(pfd)
+	base := filepath.Base(path)
 	var st unix.Stat_t
-	err := unix.Lstat(path, &st)
+	err = fstatat(pfd, base, &st)
 	if errors.Is(err, unix.ENOENT) {
-		if err := unix.Mkdir(path, mode); err != nil && !errors.Is(err, unix.EEXIST) {
+		err = unix.Mkdirat(pfd, base, mode)
+		if err == nil {
+			if mode&^0o700 != 0 {
+				unix.Fchmodat(pfd, base, mode, unix.AT_SYMLINK_NOFOLLOW) // bits the umask removed; best effort
+			}
+			if uid >= 0 && unix.Geteuid() == 0 && uid != 0 {
+				unix.Fchownat(pfd, base, uid, gid, unix.AT_SYMLINK_NOFOLLOW)
+			}
+		} else if !errors.Is(err, unix.EEXIST) {
 			return err
 		}
-		fixMode(path, mode)
-		if uid >= 0 && unix.Geteuid() == 0 && uid != 0 {
-			unix.Lchown(path, uid, gid)
-		}
-		err = unix.Lstat(path, &st)
+		err = fstatat(pfd, base, &st)
 	}
 	if err != nil {
 		return err
@@ -326,18 +349,39 @@ func ensureDir(path string, mode uint32, uid, gid int) error {
 	return nil
 }
 
-// fixMode applies mode bits the umask removed (e.g. sticky, world-writable)
-// through a no-follow fd. Best effort.
-func fixMode(path string, mode uint32) {
-	fd, err := openDir(path)
+// ensureSubdir opens (creating if needed, 0700) directory name in dfd without
+// following a symlink, and requires it to be owned by uid and on device dev.
+func ensureSubdir(dfd int, name string, uid, gid int, dev uint64) (int, error) {
+	err := unix.Mkdirat(dfd, name, 0o700)
+	created := err == nil
+	if err != nil && !errors.Is(err, unix.EEXIST) {
+		return -1, err
+	}
+	fd, err := openatDir(dfd, name)
 	if err != nil {
-		return
+		return -1, err
 	}
-	defer unix.Close(fd)
+	if created && unix.Geteuid() == 0 && uid != 0 {
+		unix.Fchown(fd, uid, gid)
+	}
 	var st unix.Stat_t
-	if unix.Fstat(fd, &st) == nil && uint32(st.Mode)&07777 != mode {
-		unix.Fchmod(fd, mode)
+	if err := unix.Fstat(fd, &st); err != nil {
+		unix.Close(fd)
+		return -1, err
 	}
+	if int(st.Uid) != uid || devOf(&st) != dev {
+		unix.Close(fd)
+		return -1, errors.New("Trash folder " + name + " is not usable")
+	}
+	return fd, nil
+}
+
+// canonOf maps a reported path inside the target to its canonical spelling.
+func (r *remover) canonOf(path string) string {
+	if rest, ok := strings.CutPrefix(path, r.pathBase); ok {
+		return r.canonBase + rest
+	}
+	return path
 }
 
 // homeStat returns the home directory and its stat (owner, device).

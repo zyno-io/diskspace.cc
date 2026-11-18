@@ -54,6 +54,22 @@ func TestRemoveSymlinkFile(t *testing.T) {
 	}
 }
 
+// A symlink standing where a protected folder is named (merged-/usr /lib64)
+// is refused like the folder.
+func TestRemoveProtectedSymlink(t *testing.T) {
+	f := newFixture(t)
+	link := filepath.Join(f.root, "lib64")
+	if err := os.Symlink(f.outside, link); err != nil {
+		t.Fatal(err)
+	}
+	testProtected = []string{link}
+	defer func() { testProtected = nil }()
+	s, _, b := f.scan(t)
+	if _, err := s.ResolveFile(b, 0, "lib64"); ErrorCode(err) != CodeProtected {
+		t.Fatalf("err=%v, want protected", err)
+	}
+}
+
 // A file with another link outside the target is removed but frees nothing.
 func TestRemoveHardlinkAccounting(t *testing.T) {
 	f := newFixture(t)

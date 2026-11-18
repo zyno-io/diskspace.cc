@@ -250,18 +250,20 @@ func pin(t *Target) (*pinned, error) {
 	if !t.ID.IsZero() && id != t.ID {
 		return nil, rmErr(CodeChanged, t.Path, nil)
 	}
-	p.attrs, _, err = attrTag(h)
+	var tag uint32
+	p.attrs, tag, err = attrTag(h)
 	if err != nil {
 		return nil, rmErr(CodeFailed, t.Path, err)
 	}
+	link := isLink(p.attrs, tag)
 	ftype := uint32(1) // file
-	if p.attrs&attrReparse != 0 {
-		ftype = 2 // reparse point (symlink)
+	if link {
+		ftype = 2 // symlink or other name-surrogate reparse point
 	}
 	if t.ftype != 0 && ftype != t.ftype {
 		return nil, rmErr(CodeChanged, t.Path, nil)
 	}
-	if id.Dev != pid.Dev || t.Dir && p.attrs&attrReparse != 0 {
+	if id.Dev != pid.Dev || t.Dir && link {
 		return nil, rmErr(CodeMountPoint, t.Path, nil)
 	}
 	fp, err := finalPath(h)
@@ -277,6 +279,9 @@ func pin(t *Target) (*pinned, error) {
 			return nil, rmErr(CodeProtected, t.Path, nil)
 		}
 	} else {
+		if b.protection().names(p.canon) {
+			return nil, rmErr(CodeProtected, t.Path, nil)
+		}
 		var si fileStandardInfo
 		if err := windows.GetFileInformationByHandleEx(h, classStandardInfo, (*byte)(unsafe.Pointer(&si)), uint32(unsafe.Sizeof(si))); err != nil {
 			return nil, rmErr(CodeFailed, t.Path, err)
@@ -287,6 +292,15 @@ func pin(t *Target) (*pinned, error) {
 	ok = true
 	return p, nil
 }
+
+// isLink reports whether attributes and reparse tag describe a link
+// (junction, symlink, volume mount: a name surrogate). Other reparse points,
+// such as cloud placeholders, are ordinary entries, as for the scanner.
+func isLink(attrs, tag uint32) bool {
+	return attrs&attrReparse != 0 && tag&reparseNameSurrogate != 0
+}
+
+func freshMounts() func() map[string]struct{} { return nil }
 
 // deleteHandle deletes the open file or (empty) directory: POSIX semantics
 // (the name goes at once) ignoring the read-only attribute, falling back to
@@ -331,9 +345,9 @@ func (r *remover) removeTree(p *pinned, t *Target) bool {
 }
 
 // removeDir removes everything in the verified directory handle h (identity
-// id) on the same volume, then the directory. Directory reparse points
-// (junctions, symlinks) are removed as links and never entered; mounted
-// volumes are skipped. It reports whether the directory itself was removed.
+// id) on the same volume, then the directory. Directory links (junctions,
+// symlinks) are removed as links and never entered; mounted volumes are
+// skipped. It reports whether the directory itself was removed.
 func (r *remover) removeDir(h windows.Handle, attrs uint32, path string, id Identity, depth int) bool {
 	var (
 		failed map[string]struct{} // left in place; never retried
@@ -341,6 +355,9 @@ func (r *remover) removeDir(h windows.Handle, attrs uint32, path string, id Iden
 		en     dirEnum
 	)
 	for {
+		// Only our own removals count as progress: an entry still listed but
+		// not openable (delete pending under the legacy disposition) must not
+		// keep the passes going.
 		progress := false
 		for restart := true; ; restart = false {
 			end, err := en.batch(h, id.Dev, &sc, restart, func(e *rawEntry) bool {
@@ -350,14 +367,15 @@ func (r *remover) removeDir(h windows.Handle, attrs uint32, path string, id Iden
 				if _, bad := failed[e.Name]; bad {
 					return true
 				}
-				if r.removeEntry(h, e, joinPath(path, e.Name), id.Dev, depth) {
+				switch r.removeEntry(h, e, joinPath(path, e.Name), id.Dev, depth) {
+				case entryRemoved:
 					progress = true
-					return true
+				case entryKept:
+					if failed == nil {
+						failed = map[string]struct{}{}
+					}
+					failed[e.Name] = struct{}{}
 				}
-				if failed == nil {
-					failed = map[string]struct{}{}
-				}
-				failed[e.Name] = struct{}{}
 				return true
 			})
 			if err != nil {
@@ -386,37 +404,39 @@ func (r *remover) removeDir(h windows.Handle, attrs uint32, path string, id Iden
 }
 
 // removeEntry removes one enumerated entry of directory dh (on volume dev).
-// It reports whether the entry is gone.
-func (r *remover) removeEntry(dh windows.Handle, e *rawEntry, path string, dev uint64, depth int) bool {
+func (r *remover) removeEntry(dh windows.Handle, e *rawEntry, path string, dev uint64, depth int) entryOutcome {
 	if e.Kind == kindDir && e.ChildFlags&proto.ChildReparse == 0 {
 		if r.devOf(path, e.ID.Dev) != dev {
 			r.skip(path)
-			return false
+			return entryKept
 		}
 		if depth+1 > maxRemoveDepth {
 			r.fail(path, CodeFailed, errTooDeep)
-			return false
+			return entryKept
 		}
 		r.beforeOpen(path)
 		ch, err := openRel(dh, e.Name, windows.DELETE|windows.FILE_LIST_DIRECTORY|windows.FILE_TRAVERSE|windows.FILE_READ_ATTRIBUTES, windows.FILE_DIRECTORY_FILE)
 		if err != nil {
 			if errCode(err) == CodeNotFound {
-				return true
+				return entryGone
 			}
 			r.fail(path, errCode(err), err)
-			return false
+			return entryKept
 		}
 		defer windows.CloseHandle(ch)
 		id, ok := handleIdentity(ch)
-		attrs, _, aerr := attrTag(ch)
-		if !ok || id != e.ID || aerr != nil || attrs&attrReparse != 0 {
+		attrs, tag, aerr := attrTag(ch)
+		if !ok || id != e.ID || aerr != nil || isLink(attrs, tag) {
 			r.fail(path, CodeChanged, nil)
-			return false
+			return entryKept
 		}
-		return r.removeDir(ch, attrs, path, id, depth+1)
+		if r.removeDir(ch, attrs, path, id, depth+1) {
+			return entryRemoved
+		}
+		return entryKept
 	}
-	// A file, or a directory reparse point (junction, symlink): removed as
-	// itself, never entered.
+	// A file, or a directory link (junction, symlink): removed as itself,
+	// never entered.
 	opts := uint32(windows.FILE_NON_DIRECTORY_FILE)
 	if e.Kind == kindDir {
 		opts = 0
@@ -424,33 +444,33 @@ func (r *remover) removeEntry(dh windows.Handle, e *rawEntry, path string, dev u
 	ch, err := openRel(dh, e.Name, windows.DELETE|windows.FILE_READ_ATTRIBUTES, opts)
 	if err != nil {
 		if errCode(err) == CodeNotFound {
-			return true
+			return entryGone
 		}
 		r.fail(path, errCode(err), err)
-		return false
+		return entryKept
 	}
 	defer windows.CloseHandle(ch)
 	attrs, tag, err := attrTag(ch)
 	if err != nil {
 		r.fail(path, CodeFailed, err)
-		return false
+		return entryKept
 	}
 	if e.Kind == kindDir {
-		if attrs&attrReparse == 0 {
+		if !isLink(attrs, tag) {
 			r.fail(path, CodeChanged, nil) // a real directory replaced the link
-			return false
+			return entryKept
 		}
 		if tag == reparseTagMountPoint && isVolumeMount(ch) {
 			r.skip(path)
-			return false
+			return entryKept
 		}
 	}
 	var si fileStandardInfo
 	windows.GetFileInformationByHandleEx(ch, classStandardInfo, (*byte)(unsafe.Pointer(&si)), uint32(unsafe.Sizeof(si)))
 	if err := deleteHandle(ch, attrs); err != nil {
 		r.fail(path, errCode(err), err)
-		return false
+		return entryKept
 	}
 	r.removed(e.Kind == kindDir, uint64(si.AllocationSize), uint64(si.EndOfFile), si.NumberOfLinks <= 1)
-	return true
+	return entryRemoved
 }

@@ -5,6 +5,7 @@ package scan
 import (
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // Protected folders can't be removed as a whole (their contents can): the
@@ -44,6 +45,10 @@ func newProtection(home string) *protection {
 	for _, q := range list {
 		q = filepath.Clean(q)
 		p.paths = append(p.paths, q)
+		// The canonical spelling of q itself (q may be a symlink: /bin).
+		if dir, err := filepath.EvalSymlinks(filepath.Dir(q)); err == nil && dir != filepath.Dir(q) {
+			p.paths = append(p.paths, filepath.Join(dir, filepath.Base(q)))
+		}
 		real, err := filepath.EvalSymlinks(q)
 		if err != nil {
 			continue
@@ -66,6 +71,19 @@ func (p *protection) covers(canon string, id Identity) bool {
 	for _, c := range canonForms(canon) {
 		for _, q := range p.paths {
 			if pathWithin(c, q) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// names reports whether canon is exactly a protected folder's path (for
+// non-directory entries, e.g. a symlink named like one).
+func (p *protection) names(canon string) bool {
+	for _, c := range canonForms(canon) {
+		for _, q := range p.paths {
+			if strings.EqualFold(strings.TrimRight(c, `\/`), strings.TrimRight(q, `\/`)) {
 				return true
 			}
 		}

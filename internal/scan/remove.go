@@ -322,7 +322,19 @@ type remover struct {
 	opts *RemoveOptions
 	res  Result
 	max  int
+
+	pathBase, canonBase string                     // the target's reported and canonical path
+	mounts              func() map[string]struct{} // current mount points (Linux fallback), lazily read
 }
+
+// entryOutcome is what happened to one entry inside a directory.
+type entryOutcome uint8
+
+const (
+	entryRemoved entryOutcome = iota // removed by us
+	entryGone                        // already gone (not progress: it may still be listed)
+	entryKept                        // left in place; the reason was recorded
+)
 
 func (r *remover) canceled() bool { return r.ctx.Err() != nil }
 
@@ -402,6 +414,7 @@ func Remove(ctx context.Context, t Target, opts RemoveOptions) (Result, error) {
 		return r.res, err
 	}
 	defer p.close()
+	r.pathBase, r.canonBase, r.mounts = t.Path, p.canon, freshMounts()
 	if opts.Mode == ModeTrash {
 		where, err := r.trash(p, &t)
 		r.res.Where = where
