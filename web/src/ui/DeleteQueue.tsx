@@ -63,9 +63,18 @@ export function DeleteQueue({ ctl }: { ctl: Controller }) {
   const units = ctl.units.value;
   const [confirm, setConfirm] = useState(false);
   const ref = useRef<HTMLElement>(null);
+  const opener = useRef<HTMLElement | null>(null);
   useEffect(() => {
-    if (open) ref.current?.focus({ preventScroll: true });
-    else setConfirm(false);
+    if (open) {
+      opener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+      ref.current?.focus({ preventScroll: true });
+      return;
+    }
+    setConfirm(false);
+    // give focus back (the pill or the list) instead of losing it to <body>
+    const o = opener.current;
+    opener.current = null;
+    if (o && document.contains(o) && (!document.activeElement || document.activeElement === document.body)) o.focus({ preventScroll: true });
   }, [open]);
   useEffect(() => {
     if (q.length === 0) setConfirm(false);
@@ -211,7 +220,7 @@ export function DeleteDialog({ ctl }: { ctl: Controller }) {
     if (!d) return;
     if (r && !d.open) d.showModal();
     else if (!r && d.open) d.close();
-  }, [!!r]);
+  }, [r]);
   return (
     <dialog
       ref={ref}
@@ -221,6 +230,12 @@ export function DeleteDialog({ ctl }: { ctl: Controller }) {
         // Escape: dismiss a finished request; an open one needs an explicit cancel
         e.preventDefault();
         ctl.closeRequest();
+      }}
+      onClose={() => {
+        // the browser may close it anyway (repeated Escape, Android back): reopen while it matters
+        const cur = ctl.request.peek();
+        if (cur && !ctl.requestFinished(cur)) ref.current?.showModal();
+        else if (cur) ctl.closeRequest();
       }}
     >
       {r && <DialogBody ctl={ctl} r={r} />}
@@ -238,6 +253,9 @@ function DialogBody({ ctl, r }: { ctl: Controller; r: DeleteRequestView }) {
   const doing = r.mode === "trash" ? `Move ${what} to the ${trash}` : `Delete ${what} permanently`;
   const close = () => ctl.closeRequest();
 
+  if (r.localError === "ended_offline") {
+    return <Frame title="Request finished" body={requestCodeText(r.localError, undefined, host, trash)} foot={<button class="btn btn-primary" onClick={close}>Close</button>} />;
+  }
   if (r.localError) {
     return <Frame title="Request canceled" body={requestCodeText(r.localError, undefined, host, trash)} foot={<button class="btn btn-primary" onClick={close}>Close</button>} />;
   }
@@ -308,7 +326,9 @@ function Outcome({ ctl, r, s, host, trash }: { ctl: Controller; r: DeleteRequest
   const failed = (s.results ?? []).filter((x) => !x.ok);
   const okCount = s.results ? s.results.length - failed.length : s.state === "done" ? s.done : 0;
   const freed = formatBytes(s.freedAlloc, units);
-  const moved = r.mode === "trash" ? `Moved ${freed} to the ${trash}. Empty the ${trash} to free the space.` : `Deleted ${freed} permanently.`;
+  // a job picked up after a reload: its mode is unknown, so say only what happened
+  const adopted = r.names.length === 0;
+  const moved = adopted ? `${freed} done.` : r.mode === "trash" ? `Moved ${freed} to the ${trash}. Empty the ${trash} to free the space.` : `Deleted ${freed} permanently.`;
   const foot = (
     <button class="btn btn-primary" onClick={close} autoFocus>
       {s.state === "done" && failed.length === 0 ? "Done" : "Close"}
@@ -316,7 +336,7 @@ function Outcome({ ctl, r, s, host, trash }: { ctl: Controller; r: DeleteRequest
   );
 
   if (s.state === "done" && failed.length === 0) {
-    return <Frame title={r.mode === "trash" ? `Moved to the ${trash}` : "Deleted"} body={<p class="dqd-lead">{moved}</p>} foot={foot} />;
+    return <Frame title={adopted ? "Finished" : r.mode === "trash" ? `Moved to the ${trash}` : "Deleted"} body={<p class="dqd-lead">{moved}</p>} foot={foot} />;
   }
   if (s.state === "refused") {
     return <Frame title="Not deleted" body={<p class="dqd-lead">{requestCodeText(s.code, s.message, host, trash)}</p>} foot={foot} />;

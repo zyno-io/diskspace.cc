@@ -145,6 +145,19 @@ describe("TreeStore deletions", () => {
     expect(s.ownAlloc[web]).toBe(0);
   });
 
+  it("totals never go negative when a partial delete freed more than a later full delete expects", () => {
+    const s = store();
+    // Projects (wire 1) partly deleted for more than its subtree, then a child goes too
+    s.applyDeleted({ scanId: 1, job: 1, items: [{ dir: 1, partial: true, freedAlloc: 16 * MB, freedApparent: 16 * MB, files: 8, dirs: 1 }] });
+    s.applyDeleted({ scanId: 1, job: 2, items: [{ dir: 5, freedAlloc: 0, freedApparent: 0, files: 0, dirs: 0 }] });
+    for (let i = 0; i < s.n; i++) {
+      expect(s.totAlloc[i]).toBeGreaterThanOrEqual(0);
+      expect(s.totApparent[i]).toBeGreaterThanOrEqual(0);
+      expect(s.totFiles[i]).toBeGreaterThanOrEqual(0);
+      expect(s.totDirs[i]).toBeGreaterThanOrEqual(0);
+    }
+  });
+
   it("survivor: nearest live ancestor of a deleted node", () => {
     const s = store();
     const projects = byName(s, 0, "Projects");
@@ -202,7 +215,7 @@ class FakeSession implements Session {
   deleteRequest(r: DeleteReq) { this.reqs.push(r); }
   deleteCancel(job: number) { this.cancels.push(job); }
   browse() { return Promise.reject(new Error("n/a")); }
-  dirFiles() { return Promise.reject(new Error("n/a")); }
+  dirFiles: Session["dirFiles"] = () => Promise.reject(new Error("n/a"));
   applied() {}
   takeOver() {}
   close() {}
@@ -358,6 +371,55 @@ describe("controller deletion queue", () => {
     expect(ctl.applyReason()).not.toBeNull();
     s.ev.deleteStatus({ job: 9, reqId: 1, state: "done", total: 4, done: 4, freedAlloc: 10 });
     expect(ctl.request.value?.status?.state).toBe("done");
+  });
+
+  it("a running request whose job ended while disconnected can be closed after reconnecting", () => {
+    const { s, ctl, n } = setup();
+    ctl.trashNow(n.web);
+    const reqId = s.reqs[0].reqId;
+    s.ev.deleteStatus({ job: 4, reqId, state: "running", total: 1, done: 0, freedAlloc: 0 });
+    s.ev.state({ s: "reconnecting", attempt: 1 });
+    expect(ctl.request.value?.localError).toBeUndefined(); // approved: it keeps running on the host
+    s.ev.state({ s: "connected", code: "9" });
+    s.ev.agentInfo({ ...INFO(), deleting: null });
+    expect(ctl.request.value?.localError).toBe("ended_offline");
+    ctl.closeRequest();
+    expect(ctl.request.value).toBeNull();
+    expect(ctl.applyReason()).toBeNull();
+  });
+
+  it("a job's own status clears AGENT_INFO.deleting once it ends", () => {
+    const { s, ctl } = setup();
+    s.ev.agentInfo({ ...INFO(), deleting: { job: 9, state: "running", done: 1, total: 2 } });
+    s.ev.deleteStatus({ job: 9, reqId: 1, state: "done", total: 2, done: 2, freedAlloc: 1 });
+    ctl.closeRequest();
+    expect(ctl.info.value?.deleting).toBeNull();
+    expect(ctl.applyReason()).toBeNull();
+  });
+
+  it("no request while the connection is not up", () => {
+    const { s, ctl, n } = setup();
+    s.ev.state({ s: "handshaking" });
+    expect(ctl.applyReason()).toBe("Not connected");
+    expect(ctl.trashNow(n.web)).toBe("Not connected");
+    expect(s.reqs).toEqual([]);
+  });
+
+  it("Show all files keeps a queued file queued (its slot moves)", async () => {
+    const { s, ctl, st, n, file } = setup();
+    ctl.addToQueue(file);
+    s.dirFiles = () =>
+      Promise.resolve({ reqId: 1, scanId: 1, dirId: 5, flags: 0, restCount: 0, restAlloc: 0, restApparent: 0, files: [
+        { name: "big.mov", alloc: 6 * MB, apparent: 6 * MB, flags: 0 },
+        { name: "cloud.pdf", alloc: MB, apparent: MB, flags: FILE_FLAG.CLOUD },
+        { name: "c.bin", alloc: MB, apparent: MB, flags: 0 },
+      ] });
+    await ctl.showAllFiles(n.app);
+    const now = st.findFile(n.app, "big.mov");
+    expect(now).not.toBe(file);
+    expect(ctl.queue.value).toEqual([now]);
+    ctl.applyQueue("trash");
+    expect(s.reqs[0].items).toEqual([{ parent: 5, name: "big.mov" }]);
   });
 
   it("uses the volume's usage from SCAN_STARTED for the synthetic remainder", () => {

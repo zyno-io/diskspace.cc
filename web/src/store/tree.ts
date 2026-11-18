@@ -339,6 +339,21 @@ export class TreeStore {
     }
   }
 
+  /**
+   * Deletion walk: subtract from idx and its ancestors, never below zero at any
+   * level (a partial delete may already have taken more than the scan measured).
+   */
+  private subUp(idx: number, a: number, p: number, f: number, dirs: number): void {
+    const stamp = this.version + 1;
+    for (let i = idx; i >= 0; i = this.parent[i]) {
+      this.touched[i] = stamp;
+      this.totAlloc[i] -= clamp(a, this.totAlloc[i]);
+      this.totApparent[i] -= clamp(p, this.totApparent[i]);
+      this.totFiles[i] -= clamp(f, this.totFiles[i]);
+      this.totDirs[i] -= clamp(dirs, this.totDirs[i]);
+    }
+  }
+
   private settle(idx: number): void {
     for (let p = this.parent[idx]; p >= 0; p = this.parent[p]) {
       if (--this.unsettled[p] !== 0) break;
@@ -414,7 +429,7 @@ export class TreeStore {
     const idx = this.liveDir(wire);
     if (idx < 0 || idx === this.root) return false;
     const p = this.parent[idx];
-    this.addUp(p, -this.totAlloc[idx], -this.totApparent[idx], -this.totFiles[idx], -(this.totDirs[idx] + 1));
+    this.subUp(p, this.totAlloc[idx], this.totApparent[idx], this.totFiles[idx], this.totDirs[idx] + 1);
     if (this.unsettled[idx] > 0) {
       // a stopped scan can leave it unsettled; it no longer holds its parent back
       this.unsettled[idx] = 0;
@@ -432,7 +447,7 @@ export class TreeStore {
     const p = clamp(apparent, this.totApparent[idx]);
     const f = clamp(files, this.totFiles[idx]);
     const d = clamp(dirs, this.totDirs[idx]);
-    this.addUp(idx, -a, -p, -f, -d);
+    this.subUp(idx, a, p, f, d);
     this.flags[idx] |= F_STALE;
     return true;
   }
@@ -460,7 +475,7 @@ export class TreeStore {
     this.ownAlloc[p] -= a;
     this.ownApparent[p] -= ap;
     this.ownFiles[p] -= 1;
-    this.addUp(p, -a, -ap, -1, 0);
+    this.subUp(p, a, ap, 1, 0);
     return true;
   }
 

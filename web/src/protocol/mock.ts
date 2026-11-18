@@ -601,7 +601,8 @@ export class MockSession implements Session {
     };
   }
 
-  readonly id = "demo";
+  /** per page load: the demo restarts its scan ids, so a saved queue must not outlive it */
+  readonly id = `demo-${Date.now().toString(36)}`;
   private job = 0;
   private del: { job: number; req: DeleteReq; status: DeleteStatus; stop: boolean; timer: number } | null = null;
 

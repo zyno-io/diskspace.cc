@@ -8,7 +8,7 @@ import { batch, computed, signal } from "@preact/signals";
 import { MAX_V2A_BODY } from "../protocol/messages";
 import type { AgentInfo, ByeMsg, ConnState, Deleted, DeleteItem, DeleteMode, DeleteStatus, NodeBatch, Progress, ScanDone, ScanEnded, ScanStarted, ScanState, Session } from "../protocol/types";
 import { defaultUnits, type Units } from "../store/format";
-import { TreeStore } from "../store/tree";
+import { KIND_NONE, TreeStore } from "../store/tree";
 import { DEFAULT_MAX_ITEMS, featureReason, itemKey, nodeReason, queuedAncestor, resolveKey, wireItem } from "./deletion";
 import { IngestScheduler, trackInput, type IngestEnv } from "./ingest";
 
@@ -261,7 +261,28 @@ export class Controller {
     const wire = st.wire(node);
     if (wire < 0) return;
     const df = await this.session.dirFiles(st.scanId, wire, 10_000);
-    if (st.applyDirFiles(df)) this.changed(true);
+    // the listing replaces the dir's file slots: carry queued files over by key
+    const queued = this.queue.peek().filter((q) => st.parent[q] === node && !st.isDir(q));
+    const keys = queued.map((q) => itemKey(st, q));
+    const menu = this.menu.peek();
+    if (!st.applyDirFiles(df)) return;
+    batch(() => {
+      if (queued.length) {
+        const gone = new Set(queued);
+        const next = this.queue.peek().filter((q) => !gone.has(q));
+        for (const k of keys) {
+          const n = k ? resolveKey(st, k) : -1;
+          if (n >= 0 && !next.includes(n)) next.push(n);
+        }
+        this.queue.value = next;
+        this.saveQueue();
+      }
+      const dead = (n: number) => n >= 0 && st.kind[n] === KIND_NONE;
+      if (dead(this.selected.peek())) this.selected.value = node;
+      if (dead(this.hovered.peek())) this.hovered.value = -1;
+      if (menu && dead(menu.node)) this.menu.value = null;
+    });
+    this.changed(true);
   }
 
   // ---- deletion queue ------------------------------------------------------------
@@ -333,7 +354,7 @@ export class Controller {
     if (f) return f;
     const ph = this.phase.peek();
     if (ph === "scanning") return "Finish or stop the scan first";
-    if (ph !== "done" && ph !== "stopped") return "Not connected";
+    if (ph !== "done" && ph !== "stopped" || this.conn.peek().s !== "connected") return "Not connected";
     const r = this.request.peek();
     if (r && !this.requestFinished(r)) return "Another request is in progress";
     const d = this.info.peek()?.deleting;
@@ -403,6 +424,11 @@ export class Controller {
   }
 
   private onDeleteStatus(m: DeleteStatus): void {
+    // AGENT_INFO.deleting only arrives on connect: keep it current from the job's own status
+    const info = this.info.peek();
+    if (info?.deleting && info.deleting.job === m.job) {
+      this.info.value = { ...info, deleting: TERMINAL.has(m.state) ? null : { job: m.job, state: m.state, done: m.done, total: m.total } };
+    }
     const r = this.request.peek();
     const mine = !!r && (r.job === m.job || (r.job === null && r.reqId === m.reqId));
     if (!r || !mine) {
@@ -418,9 +444,13 @@ export class Controller {
 
   /** AGENT_INFO.deleting after a reconnect: show the running job */
   private adoptJob(i: AgentInfo): void {
-    const d = i.deleting;
-    if (!d || TERMINAL.has(d.state)) return;
+    const d = i.deleting && !TERMINAL.has(i.deleting.state) ? i.deleting : null;
     const r = this.request.peek();
+    // our request is not the agent's running job: it ended (or never arrived) while we were away
+    if (r && !this.requestFinished(r) && r.job !== null && (!d || d.job !== r.job)) {
+      this.request.value = { ...r, localError: r.status && r.status.state === "running" ? "ended_offline" : "disconnected" };
+    }
+    if (!d) return;
     if (r && (r.job === d.job || !this.requestFinished(r))) return;
     this.request.value = { reqId: 0, mode: "trash", names: [], bytes: 0, count: d.total, job: d.job, status: { job: d.job, reqId: 0, state: d.state, total: d.total, done: d.done, freedAlloc: 0 }, cancelWanted: false };
   }

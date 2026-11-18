@@ -232,6 +232,8 @@ export function requestCodeText(code: string | undefined, message: string | unde
       return `The ${trash} isn't available here. You can delete permanently instead.`;
     case "disconnected":
       return "The connection dropped before it was approved. Nothing was deleted.";
+    case "ended_offline":
+      return "It finished while this page was disconnected. The folder list shows what was deleted.";
     default:
       return message || (code ? `It didn't go through (${code}).` : "It didn't go through.");
   }
