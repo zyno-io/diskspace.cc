@@ -41,13 +41,13 @@ Want to see it first? [Try the demo](https://diskspace.cc/demo) with a made-up s
 
 - **Open the link on your laptop, not the server.** The link works from any device that can reach diskspace.cc. On a terminal that can show it, the CLI also prints a QR code for your phone.
 - **Elevation over SSH.** Run it as a regular user and say yes to the sudo prompt, or pass `--elevate`. Elevated, anyone with the link can see the names of every file on the box; share it accordingly.
-- **Deletes are approved in the server's terminal.** Keep the SSH session open while you clean up. Started without a terminal (a service manager, a detached background job), deleting is off.
+- **Deletes are approved in the server's terminal.** Keep the SSH session open while you clean up; for a long session, run it inside `tmux` or `screen`. Started without a controlling terminal (a systemd unit, cron, `setsid`), deleting is off. Don't background it with `&` or `nohup`: it keeps the terminal but can't read your answer.
 - **It cleans up after itself.** It exits when you press Ctrl-C, or after 30 minutes with no browser connected (`--idle 2h`, or `--idle 0` to never exit).
-- **Keeping the box off diskspace.cc.** Self-host the relay (below) and pass `--relay https://disk.example.com`. Or run with `--no-relay`, which serves the viewer on `127.0.0.1:<port>` on the server; forward the same port number (`ssh -L <port>:127.0.0.1:<port> web-01`) and open the printed link on your laptop.
+- **Keeping the box off diskspace.cc.** Self-host the relay (below), which also serves the bootstrap script: `curl -fsSL https://disk.example.com/run | sh -s -- --relay https://disk.example.com /`. Or run with `--no-relay`, which serves the viewer on `127.0.0.1:<port>` on the server; forward the same port number (`ssh -L <port>:127.0.0.1:<port> web-01`) and open the printed link on your laptop.
 
 ## For AI agents
 
-When a user wants to see what is filling a disk, an agent can run `curl -fsSL https://diskspace.cc/run | sh -s -- --quiet /` in the background on the machine and hand the user the printed link. The link contains the decryption key: share it only with that user. Started without a terminal, deleting is off; a user who wants to clean up should run the command in their own SSH session, since deletion prompts belong to them. Never answer one on the user's behalf. diskspace has no machine-readable output; for numbers of your own, use `du`. A summary for agents is published at [diskspace.cc/llms.txt](https://diskspace.cc/llms.txt).
+When a user wants to see what is filling a disk, an agent can run `curl -fsSL https://diskspace.cc/run | sh -s -- --quiet --no-elevate /` in the background on the machine and hand the user the printed link. The link contains the decryption key: share it only with that user. Started without a controlling terminal, deleting is off; a user who wants to clean up should run the command in their own SSH session, since deletion prompts belong to them. Never answer one on the user's behalf. diskspace has no machine-readable output; for numbers of your own, use `du`. A summary for agents is published at [diskspace.cc/llms.txt](https://diskspace.cc/llms.txt).
 
 ## CLI
 

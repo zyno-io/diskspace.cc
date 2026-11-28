@@ -6,16 +6,16 @@ diskspace is a tool for people, not an API: its output is a link to an interacti
 
 ## Running it for a user
 
-- Linux and macOS: `curl -fsSL https://diskspace.cc/run | sh -s -- /` (the trailing path is optional; without it the person picks a folder in the browser).
+- Linux and macOS: `curl -fsSL https://diskspace.cc/run | sh -s -- --quiet --no-elevate /` (the trailing path is optional; without it the person picks a folder in the browser).
 - Windows (PowerShell only, not Run or cmd): `irm https://diskspace.cc/run.ps1 | iex`
 - Nothing is installed. The script downloads the release for the OS/arch, verifies its SHA-256 against the release's checksums.txt, runs it from a temp dir and cleans up.
-- It keeps running until stopped, or until 30 minutes pass without a browser connected (`--idle`, 0 disables). Run it in the background and give the person the printed `https://diskspace.cc/s/...#...` link. `--quiet` prints only the link.
+- It keeps running until stopped, or until 30 minutes pass without a browser connected (`--idle`, 0 disables). Run it in the background and give the person the printed `https://diskspace.cc/s/...#...` link. `--quiet` prints only the link on stdout (progress and hints still go to stderr; a new link is printed if the session is rotated).
 - The link contains the decryption key after `#`. Treat it as a secret: anyone with it can see the names of the files it can read. Share it only with the person who asked.
-- Not root: it asks whether to restart with sudo; Enter (or no terminal) means no. `--elevate` / `--no-elevate` skip the question.
+- Not root: it asks whether to restart with sudo, and prints no link until that is answered, so pass `--no-elevate` (or `--elevate` where sudo needs no password) when running it unattended.
 
 ## Deleting
 
-The person can queue files and folders for deletion in the browser. Every request must then be approved by typing `y` in the terminal diskspace runs in. That approval belongs to the person: never answer the prompt on their behalf, and never pipe `y` into diskspace. Started without a terminal (as most agent tool calls are), deleting is off; if the person wants to clean up, have them run the command in their own SSH session.
+The person can queue files and folders for deletion in the browser. Every request must then be approved by typing `y` in the terminal diskspace runs in. That approval belongs to the person: never answer the prompt on their behalf, and never pipe `y` into diskspace. Started without a controlling terminal (as most agent tool calls are), deleting is off; if the person wants to clean up, have them run the command in their own SSH session.
 
 ## Useful flags
 

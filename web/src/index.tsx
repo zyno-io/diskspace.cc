@@ -318,7 +318,7 @@ function Landing() {
               </ul>
             </div>
           </div>
-          <p class="fine">The relay also serves this page's code. If you'd rather not rely on that, run diskspace with --local and the scanned machine serves the page itself. To keep the box off diskspace.cc entirely, self-host the relay and pass --relay.</p>
+          <p class="fine">The relay also serves this page's code. If you'd rather not rely on that, run diskspace with --local and the scanned machine serves the page itself (on a remote box, open it through an SSH tunnel). To keep the box off diskspace.cc entirely, self-host the relay and pass --relay.</p>
         </section>
 
         <section aria-labelledby="desktop">
