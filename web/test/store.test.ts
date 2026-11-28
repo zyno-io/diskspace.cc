@@ -211,6 +211,21 @@ describe("TreeStore", () => {
     expect(s.childFlags(v)).toBe(CHILD_FLAG.OTHER_DEVICE);
   });
 
+  test("counts unreadable folders, which still settle", () => {
+    const s = new TreeStore();
+    s.reset(started());
+    feed(s, [dir(0, { ownAlloc: 4096, firstChildId: 1, dirs: [{ name: "lost+found", flags: 0 }, { name: "ok", flags: 0 }] })]);
+    feed(s, [dir(1, { flags: DIR_FLAG.READ_DENIED }), dir(2, { ownAlloc: 8192, ownFiles: 2 })]);
+    expect(s.deniedDirs).toBe(1);
+    const lf = byName(s, 0, "lost+found");
+    expect(s.dirFlags(lf) & DIR_FLAG.READ_DENIED).toBe(DIR_FLAG.READ_DENIED);
+    expect(s.isSettled(lf)).toBe(true);
+    expect(s.size(0)).toBe(12_288);
+    expect(s.rootSettled()).toBe(true);
+    s.reset(started(2));
+    expect(s.deniedDirs).toBe(0);
+  });
+
   test("ignores other scans, duplicates, and resets on scanStarted", () => {
     const s = new TreeStore();
     s.reset(started(1));

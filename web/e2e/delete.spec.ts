@@ -88,6 +88,7 @@ test.describe("deletion desktop", () => {
     await page.getByRole("button", { name: "Delete permanently", exact: true }).click();
     const dlg = page.locator("dialog.dq-dialog");
     await expect(dlg.getByRole("heading", { name: "Some items weren't deleted" })).toBeVisible({ timeout: 15_000 });
+    await expect(dlg.locator(".dqd-why").first()).toHaveText(/^Partly deleted/);
     await shot(page, "desktop-dialog-partial");
     await dlg.getByRole("button", { name: "Close" }).click();
     await expect(page.locator(".dq-name")).toHaveText(["acme-agent"]);

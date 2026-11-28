@@ -458,13 +458,13 @@ class Gen {
           withBig(P.ltiny, () => [["pg_restore_20251002.sql", jit(1.1 * GB)], ["upload-cache.tar", jit(380 * MB)]]),
         ];
       case K.LUsr:
-        return [["bin", "lib", "share", "local", "sbin", "include", "libexec", "src"].map((n) => k(n, K.LSys)), P.ltiny];
+        return [["bin", "lib", "share", "local", "sbin", "include", "libexec", "src"].map((n) => k(n, K.LSys, undefined, "usr")), P.ltiny];
       case K.LSys: {
         const n = Math.max(0, Math.round((depth < 3 ? 8 : 5) - depth * 0.8 + g.normal() * 1.4));
         const kids = many(n, () => k(g.pick(LSYS_NAMES), K.LSys));
-        if (depth === 2 && nm === "lib")
+        if (this.extra[id] === "usr" && nm === "lib")
           return [kids, withBig(P.lsys, () => Array.from({ length: 7 }, (_, j): [string, number] => [`lib${LSYS_LIBS[j]}.so.${g.int(1, 19)}`, g.logNormal(110 * MB, 0.6)]))];
-        if (depth === 2 && nm === "share")
+        if (this.extra[id] === "usr" && nm === "share")
           return [kids, withBig(P.lsys, () => Array.from({ length: 5 }, (_, j): [string, number] => [LSYS_SHARE[j] + "." + g.hex(3), g.logNormal(70 * MB, 0.7)]))];
         return [kids, P.lsys];
       }

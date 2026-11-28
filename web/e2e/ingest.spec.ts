@@ -53,7 +53,7 @@ async function readLag(page: Page) {
 
 test("demo scan keeps the event loop free", async ({ page }) => {
   await installProbe(page);
-  await page.goto("/viewer.html?demo");
+  await page.goto("/viewer.html?demo&dirs=160000");
   await page.getByRole("button", { name: /^Home/ }).click();
   await expect(page.getByRole("button", { name: "Scan again" })).toBeVisible({ timeout: 150_000 });
   const lag = await readLag(page);
