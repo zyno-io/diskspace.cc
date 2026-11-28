@@ -1,6 +1,6 @@
 # diskspace.cc
 
-See what's filling a server's disk, from your browser.
+See what's filling a server's disk, from your browser. Like ncdu, but you explore it as a treemap on your laptop.
 
 Run one command on the box, over SSH or at a console. It prints a secure link. Open the link in a browser on your laptop, pick a folder, and watch a treemap of the server's disk paint itself as the scan streams in. The link is end-to-end encrypted: the relay in the middle never sees a single file name.
 

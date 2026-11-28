@@ -276,6 +276,7 @@ function Landing() {
 
         <section aria-labelledby="servers">
           <h2 id="servers">Built for headless servers</h2>
+          <p class="lede">Like ncdu, but you explore the results as a treemap in your laptop's browser.</p>
           <div class="facts">
             <div>
               <h3>No GUI on the box</h3>
