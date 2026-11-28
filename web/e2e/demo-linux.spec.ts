@@ -26,12 +26,15 @@ test("protected Linux paths can't be deleted, a container json log can", async (
   await row(page, "boot").click({ button: "right" });
   await expect(page.locator(".ctx-reason").first()).toContainText("Protected folder");
   await page.keyboard.press("Escape");
-  await row(page, "var").locator(".tw").click();
-  await row(page, "lib").locator(".tw").click();
-  await row(page, "docker").click({ button: "right" });
+  // merged /usr: /usr/lib is protected like /lib
+  await row(page, "usr").locator(".tw").click();
+  await row(page, "lib").first().click({ button: "right" });
   await expect(page.locator(".ctx-reason").first()).toContainText("Protected folder");
   await page.keyboard.press("Escape");
+  await row(page, "usr").locator(".tw").click();
   // a container's json log goes to the Trash, and the dialog says where
+  await row(page, "var").locator(".tw").click();
+  await row(page, "lib").locator(".tw").click();
   await row(page, "docker").locator(".tw").click();
   await row(page, "containers").locator(".tw").click();
   await row(page, /^[0-9a-f]{64}$/).locator(".tw").click();
@@ -42,7 +45,7 @@ test("protected Linux paths can't be deleted, a container json log can", async (
   await page.getByRole("button", { name: /^Deletion queue/ }).click();
   await page.getByRole("button", { name: "Move to Trash" }).click();
   const dlg = page.locator("dialog.dq-dialog");
-  await expect(dlg.getByText("/root/.local/share/Trash/files")).toBeVisible({ timeout: 20_000 });
+  await expect(dlg.getByText("/home/deploy/.local/share/Trash/files")).toBeVisible({ timeout: 20_000 });
   await expect(dlg.getByText("Delete them there")).toBeVisible();
 });
 

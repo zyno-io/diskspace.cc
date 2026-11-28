@@ -808,8 +808,6 @@ const DEMO_VOLUMES: Volume[] = [
   { path: "/Volumes/Shared", label: "Shared", fs: "smbfs", total: 3_998_000_000_000, free: 1_102_000_000_000, used: 2_896_000_000_000, kind: "network", readOnly: false },
 ];
 
-/** where root's Trash keeps deleted files (what the agent reports as DeleteStatus.where) */
-const LINUX_TRASH_DIR = "/root/.local/share/Trash/files";
 
 const LINUX_VOLUMES: Volume[] = [
   { path: "/", label: "/", fs: "ext4", total: 214_748_364_800, free: 15_000_000_000, used: 197_600_000_000, kind: "boot", readOnly: false },
@@ -990,6 +988,13 @@ export class MockSession implements Session {
     });
   }
 
+  /** the Trash the agent would report as DeleteStatus.where: under sudo, the invoking user's home on
+   * the root volume, else <mount>/.Trash-<uid> (internal/scan/trash_linux.go) */
+  private linuxTrashDir(): string {
+    const vol = this.info.volumes.find((v) => v.path !== "/" && (this.scanPath === v.path || this.scanPath.startsWith(v.path + "/")));
+    return vol ? `${vol.path}/.Trash-1000/files` : `${this.info.home}/.local/share/Trash/files`;
+  }
+
   private stopScan(): void {
     window.clearTimeout(this.scanTimer);
     window.clearInterval(this.progTimer);
@@ -1127,7 +1132,7 @@ export class MockSession implements Session {
         if (deleted.length) ev.deleted({ scanId: d.req.scanId, job: d.job, items: deleted });
         // like the real agent on Linux: report where the Trash put things
         const trashed = this.linux && d.req.mode === "trash" && results.some((r) => r.ok);
-        finish({ state: "done", done: i, freedAlloc: freed, current: undefined, results, ...(trashed ? { where: LINUX_TRASH_DIR } : {}) });
+        finish({ state: "done", done: i, freedAlloc: freed, current: undefined, results, ...(trashed ? { where: this.linuxTrashDir() } : {}) });
         return;
       }
       const it = items[i];
@@ -1143,8 +1148,8 @@ export class MockSession implements Session {
       } else if (g.linux && imm && "name" in it && it.parent === varId && it.name === "queue.db") {
         // immutable file (chattr +i): unlink fails with EPERM
         results.push({ i, ok: false, code: "permission", freedAlloc: 0, files: 0, dirs: 0 });
-      } else if (g.linux && imm && holdsImm && "dir" in it) {
-        // everything but the immutable file goes
+      } else if (g.linux && imm && holdsImm && "dir" in it && d.req.mode === "permanent") {
+        // everything but the immutable file goes (a Trash move is one rename of the folder, which succeeds)
         const a = tot.alloc[it.dir] - imm.alloc, ap = tot.apparent[it.dir] - imm.apparent, fl = tot.files[it.dir] - 1;
         freed += a;
         results.push({ i, ok: false, code: "partial", message: "queue.db: operation not permitted", freedAlloc: a, files: fl, dirs: tot.dirs[it.dir] });
