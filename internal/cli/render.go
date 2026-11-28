@@ -194,7 +194,7 @@ func (r *Renderer) Link(url, local string) {
 	fmt.Fprintln(w)
 	if url != "" {
 		if first {
-			fmt.Fprintln(w, "Open this link in your browser:")
+			fmt.Fprintln(w, "Open this link in a browser on any device:")
 		} else {
 			fmt.Fprintln(w, "New link:")
 		}
@@ -206,11 +206,11 @@ func (r *Renderer) Link(url, local string) {
 	}
 	if local != "" {
 		if url == "" {
-			fmt.Fprintln(w, "Open this link in your browser (this computer only):")
+			fmt.Fprintln(w, "Open this link in a browser on this machine, or through an SSH tunnel:")
 			fmt.Fprintln(w, "  "+r.style("1;4", local))
 		} else {
 			fmt.Fprintln(w)
-			fmt.Fprintln(w, "Local link (this computer only):")
+			fmt.Fprintln(w, "Local link (this machine, or through an SSH tunnel):")
 			fmt.Fprintln(w, "  "+local)
 		}
 	}

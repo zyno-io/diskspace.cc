@@ -22,7 +22,7 @@ func TestPlainRendering(t *testing.T) {
 	r.Event(session.Event{Kind: session.EvScanDone, Ms: 14200, Totals: &proto.ScanTotals{Files: 1200000, Alloc: 5e9}})
 	r.Close()
 	s := out.String()
-	for _, want := range []string{"diskspace.cc v1", "Open this link in your browser:", "https://diskspace.cc/s/abc#key",
+	for _, want := range []string{"diskspace.cc v1", "Open this link in a browser on any device:", "https://diskspace.cc/s/abc#key",
 		"Local link", "Running as alex (standard user)", "verification code 123 456", "Scanning /x", "Scan done in 14.2 s", "1.2M files"} {
 		if !strings.Contains(s, want) {
 			t.Errorf("missing %q in:\n%s", want, s)

@@ -12,8 +12,8 @@ const SHOTS = process.env.SHOTS_DIR ?? join(import.meta.dirname, "__shots__");
 const shot = (page: Page, name: string) => page.screenshot({ path: join(SHOTS, `${name}.png`) });
 const row = (page: Page, label: string) => page.locator(".row:not([hidden])").filter({ has: page.locator(".label", { hasText: new RegExp(`^${label}$`) }) }).first();
 
-async function finishedScan(page: Page, approve = 3500) {
-  await page.goto(`/viewer.html?demo&scan=/Users/alex&approve=${approve}`);
+async function finishedScan(page: Page, approve = 3500, scan = "/home/deploy") {
+  await page.goto(`/viewer.html?demo&scan=${scan}&approve=${approve}`);
   await expect(page.getByRole("button", { name: "Scan again" })).toBeVisible({ timeout: 120_000 });
   await page.waitForTimeout(800);
 }
@@ -22,9 +22,9 @@ test.describe("deletion desktop", () => {
   test.use({ viewport: { width: 1440, height: 900 } });
 
   test("queue while scanning: apply waits for the scan", async ({ page }) => {
-    await page.goto("/viewer.html?demo&scan=/Users/alex");
-    await expect(row(page, "Projects")).toBeVisible({ timeout: 30_000 });
-    await row(page, "Projects").click({ button: "right" });
+    await page.goto("/viewer.html?demo&scan=/home/deploy");
+    await expect(row(page, "backups")).toBeVisible({ timeout: 30_000 });
+    await row(page, "backups").click({ button: "right" });
     await page.getByRole("menuitem", { name: "Add to deletion queue" }).click();
     await page.getByRole("button", { name: /^Deletion queue/ }).click();
     await expect(page.locator(".dq-hint")).toHaveText("Finish or stop the scan first");
@@ -35,11 +35,11 @@ test.describe("deletion desktop", () => {
   test("menu, marks, drawer, approve, run, done", async ({ page }) => {
     await finishedScan(page);
     // protected folder: its reason shows under the disabled item
-    await row(page, "Library").click({ button: "right" });
+    await row(page, "\\.config").click({ button: "right" });
     await expect(page.locator(".ctx-reason").first()).toContainText("Protected folder");
     await shot(page, "desktop-menu-protected");
     await page.keyboard.press("Escape");
-    await row(page, "Projects").click({ button: "right" });
+    await row(page, "backups").click({ button: "right" });
     const menu = page.getByRole("menu");
     await expect(menu).toBeVisible();
     await shot(page, "desktop-menu-list");
@@ -70,18 +70,17 @@ test.describe("deletion desktop", () => {
     await expect(dlg.getByRole("heading", { name: "Moved to the Trash" })).toBeVisible({ timeout: 15_000 });
     await shot(page, "desktop-dialog-done");
     await dlg.getByRole("button", { name: "Done" }).click();
-    await expect(row(page, "Projects")).toHaveCount(0);
+    await expect(row(page, "backups")).toHaveCount(0);
     await expect(page.getByRole("button", { name: /^Deletion queue/ })).toHaveCount(0);
     await shot(page, "desktop-after-delete");
   });
 
   test("partial result keeps failed items queued", async ({ page }) => {
-    await finishedScan(page, 600);
-    await row(page, "Library").locator(".tw").click();
-    await expect(row(page, "Containers")).toBeVisible();
-    await row(page, "Containers").click({ button: "right" });
+    // /opt/acme-agent holds an immutable queue.db: a permanent delete removes the rest and reports it partial
+    await finishedScan(page, 600, "/opt");
+    await row(page, "acme-agent").click({ button: "right" });
     await page.getByRole("menuitem", { name: "Add to deletion queue" }).click();
-    await row(page, "go").click({ button: "right" });
+    await row(page, "containerd").click({ button: "right" });
     await page.getByRole("menuitem", { name: "Add to deletion queue" }).click();
     await page.getByRole("button", { name: /^Deletion queue/ }).click();
     await page.getByRole("button", { name: "Delete permanently…" }).click();
@@ -89,16 +88,17 @@ test.describe("deletion desktop", () => {
     await page.getByRole("button", { name: "Delete permanently", exact: true }).click();
     const dlg = page.locator("dialog.dq-dialog");
     await expect(dlg.getByRole("heading", { name: "Some items weren't deleted" })).toBeVisible({ timeout: 15_000 });
+    await expect(dlg.locator(".dqd-why").first()).toHaveText(/^Partly deleted/);
     await shot(page, "desktop-dialog-partial");
     await dlg.getByRole("button", { name: "Close" }).click();
-    await expect(page.locator(".dq-name")).toHaveText(["Containers"]);
+    await expect(page.locator(".dq-name")).toHaveText(["acme-agent"]);
     await shot(page, "desktop-drawer-after-partial");
   });
 
   test("declined on the host", async ({ page }) => {
-    await page.goto("/viewer.html?demo&scan=/Users/alex&approve=no");
+    await page.goto("/viewer.html?demo&scan=/home/deploy&approve=no");
     await expect(page.getByRole("button", { name: "Scan again" })).toBeVisible({ timeout: 120_000 });
-    await row(page, "Projects").click({ button: "right" });
+    await row(page, "backups").click({ button: "right" });
     await page.getByRole("menuitem", { name: "Move to Trash now…" }).click();
     const dlg = page.locator("dialog.dq-dialog");
     await expect(dlg.getByRole("heading", { name: "Not deleted" })).toBeVisible({ timeout: 10_000 });
@@ -111,8 +111,8 @@ test.describe("deletion phone", () => {
 
   test("menu and bottom sheet", async ({ page }) => {
     await finishedScan(page);
-    await row(page, "Projects").scrollIntoViewIfNeeded();
-    await row(page, "Projects").click({ button: "right" });
+    await row(page, "backups").scrollIntoViewIfNeeded();
+    await row(page, "backups").click({ button: "right" });
     await expect(page.getByRole("menu")).toBeVisible();
     await shot(page, "phone-menu");
     await page.getByRole("menuitem", { name: "Add to deletion queue" }).click();

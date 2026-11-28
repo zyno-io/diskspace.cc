@@ -300,7 +300,7 @@ func RenderConfirm(req session.ConfirmRequest) string {
 	for _, w := range req.Warnings {
 		b.WriteString("! " + w + "\n")
 	}
-	via := "on this computer (local link)"
+	via := "through the local link"
 	if req.ViaRelay {
 		via = "through the relay"
 	}

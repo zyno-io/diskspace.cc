@@ -65,6 +65,11 @@ export function wireItem(st: TreeStore, n: number): DeleteItem | null {
 // ---- protected folders ---------------------------------------------------------------
 
 const UNIX_SYSTEM = ["/", "/Users", "/home", "/root", "/var/root", "/System", "/Library", "/Applications", "/usr", "/bin", "/sbin", "/etc", "/var", "/private", "/opt", "/dev", "/cores", "/Volumes"];
+// mirrors internal/scan/protected_linux.go
+const LINUX_SYSTEM = ["/", "/bin", "/boot", "/dev", "/etc", "/home", "/lib", "/lib32", "/lib64", "/libx32", "/media", "/mnt", "/opt", "/proc", "/root", "/run", "/sbin", "/snap", "/srv", "/sys", "/tmp", "/usr", "/var", "/var/tmp",
+  // merged /usr: the agent resolves /bin, /sbin, /lib, /lib64 to these and protects them too
+  "/usr/bin", "/usr/sbin", "/usr/lib", "/usr/lib64"];
+const LINUX_HOME_DIRS = ["Desktop", "Documents", "Downloads", "Music", "Pictures", "Public", "Templates", "Videos", ".config", ".local", ".local/share", ".local/share/Trash"];
 const UNIX_HOME_DIRS = ["Library", "Documents", "Desktop", "Downloads", "Pictures", "Movies", "Music", "Public", "Applications", ".Trash"];
 const WIN_HOME_DIRS = ["AppData", "Documents", "Desktop", "Downloads", "Pictures", "Videos", "Music", "OneDrive"];
 const WIN_SYSTEM = /^[a-z]:\\(windows|program files[^\\]*|programdata|\$recycle\.bin|system volume information|users)$/;
@@ -95,6 +100,19 @@ export function isProtectedPath(path: string, info: Pick<AgentInfo, "os" | "home
     if (WIN_SYSTEM.test(p)) return true;
     const m = /^[a-z]:\\users\\[^\\]+(?:\\([^\\]+))?$/.exec(p);
     if (m && (!m[1] || WIN_HOME_DIRS.some((d) => d.toLowerCase() === m[1]))) return true;
+  } else if (info.os === "linux") {
+    // system roots, every home (/root, /home/<user>) with its standard folders; volume roots are in `fixed`
+    if (LINUX_SYSTEM.includes(p)) return true;
+    const m = /^\/home\/[^/]+(?:\/(.+))?$/.exec(p);
+    if (m && (!m[1] || LINUX_HOME_DIRS.includes(m[1]))) return true;
+    const homes = [info.home ? norm(info.home, false, false) : "", "/root"];
+    for (const h of homes) {
+      if (h && p.startsWith(h + "/") && LINUX_HOME_DIRS.includes(p.slice(h.length + 1))) return true;
+    }
+    // ancestors of a protected home folder (e.g. ~/.local)
+    for (const h of homes) {
+      if (h && LINUX_HOME_DIRS.some((d) => (h + "/" + d).startsWith(p + "/"))) return true;
+    }
   } else {
     if (UNIX_SYSTEM.some((s) => norm(s, false, fold) === p)) return true;
     const m = /^(?:\/users|\/home)\/[^/]+(?:\/([^/]+))?$/i.exec(p);
@@ -140,6 +158,11 @@ export function nodeReason(st: TreeStore, n: number, info: AgentInfo | null): st
   if (!st.hasRecord(n)) return "Not scanned yet";
   if (df & DIR_FLAG.VANISHED) return "Already gone";
   if (info && isProtectedPath(st.fullPath(n), info)) return "Protected folder (its contents can be deleted)";
+  // the agent also refuses every mount point and every folder above one. A bind mount is always a
+  // mount; on Linux OTHER_DEVICE can also be an unmounted btrfs subvolume, which the agent deletes
+  // around, so there only the agent can tell (Windows sets neither flag)
+  const mountFlags = CHILD_FLAG.BIND_MOUNT | (info?.os === "darwin" ? CHILD_FLAG.OTHER_DEVICE : 0);
+  if (hasOtherVolume(st, n, mountFlags)) return "Protected folder: it holds another volume (its contents can be deleted)";
   return null;
 }
 
@@ -155,13 +178,13 @@ export function queuedAncestor(st: TreeStore, n: number, queued: ReadonlySet<num
 export function itemWarnings(st: TreeStore, n: number, os: string): string[] {
   const out: string[] = [];
   if (st.kind[n] === KIND_FILE && st.fileFlags(n) & FILE_FLAG.CLOUD) out.push(`${os === "windows" ? "OneDrive" : "iCloud"} file: deleting removes it on all your devices`);
-  if (st.kind[n] === KIND_DIR && hasOtherVolume(st, n)) out.push("Contains another volume, which is skipped");
+  if (st.kind[n] === KIND_DIR && hasOtherVolume(st, n, CHILD_FLAG.OTHER_DEVICE | CHILD_FLAG.BIND_MOUNT)) out.push("Contains another volume, which is skipped");
   if (st.size(n) > LARGE_BYTES || st.files(n) > LARGE_FILES) out.push("Large: deleting permanently needs a second confirmation");
   return out;
 }
 
 /** a dir somewhere below n is a mount point or another volume (bounded walk) */
-function hasOtherVolume(st: TreeStore, n: number, budget = 200_000): boolean {
+function hasOtherVolume(st: TreeStore, n: number, flags: number, budget = 200_000): boolean {
   const stack = [n];
   let seen = 0;
   while (stack.length && seen < budget) {
@@ -171,7 +194,7 @@ function hasOtherVolume(st: TreeStore, n: number, budget = 200_000): boolean {
       const c = ds + i;
       seen++;
       if (st.kind[c] !== KIND_DIR) continue;
-      if (st.childFlags(c) & (CHILD_FLAG.OTHER_DEVICE | CHILD_FLAG.BIND_MOUNT)) return true;
+      if (st.childFlags(c) & flags) return true;
       if (st.dFilled[c] > 0) stack.push(c);
     }
   }

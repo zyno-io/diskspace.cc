@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 //
-// Rough frame-time probe: full demo scan (~160k dirs, ~330k nodes), then
+// Rough frame-time probe: full demo scan (~24k dirs), then
 // zoom in/out and hover while sampling requestAnimationFrame intervals.
 // Headless numbers are indicative only; printed, loosely asserted.
 
@@ -9,7 +9,7 @@ import { expect, test } from "@playwright/test";
 test.use({ viewport: { width: 1440, height: 900 } });
 
 test("treemap frame times", async ({ page }) => {
-  await page.goto("/viewer.html?demo");
+  await page.goto("/viewer.html?demo&dirs=160000");
   await page.getByRole("button", { name: /^Home/ }).click();
 
   // sample during streaming (tweens + relayouts)

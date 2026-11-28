@@ -1,16 +1,22 @@
 // SPDX-License-Identifier: MIT
 //
 // MockSession: a faithful, offline implementation of Session used by /?demo
-// and by the landing-page hero. It generates a plausible macOS home/volume
-// tree lazily (parents always announce child ids before the child's own DIR
-// record), streams it as NodeBatch messages over ~10 s, sends PROGRESS at 4 Hz
-// and SCAN_DONE with denied counts, and supports cancel, browse and dirFiles.
-// Deletion requests run the whole flow (preparing, awaiting approval "on the
-// host", running, DELETED + done); items under ~/Library/Containers fail with
-// "denied" so the partial-result dialog can be seen too.
+// and by the landing-page hero. It plays a Linux server (a Docker, web and
+// database box someone SSHes into because the disk filled up, run via sudo).
+// The tree is generated lazily (parents always announce child ids before the
+// child's own DIR record), streamed as NodeBatch messages over ~10 s, with
+// PROGRESS at 4 Hz and SCAN_DONE with denied counts; cancel, browse and
+// dirFiles are supported. Deletion requests run the whole flow (preparing,
+// awaiting approval "on the host", running, DELETED + done). One realistic
+// failure lets the partial-result dialog be seen: /opt/acme-agent/var/queue.db
+// is immutable (chattr +i), so deleting it fails with "permission" and its
+// folders come back "partial". The mock also mirrors the real agent's
+// "protected" refusals (system roots, home folders, mount points and every
+// folder above one, e.g. the overlay2 dirs of running containers).
 
 import type { AgentInfo, BrowseResult, ChildRec, ConnState, DeletedItem, DeleteReq, DeleteResult, DeleteStatus, DirFiles, DirRec, FileRec, NodeRecord, ScanOptions, Session, SessionEvents, Volume } from "./types";
 import { CHILD_FLAG, DIR_FLAG, PROTO_VERSION } from "./types";
+import { isProtectedPath } from "../ui/deletion";
 
 export interface MockOptions {
   /** approximate number of dirs in a full scan */
@@ -68,36 +74,41 @@ const NPM = "react react-dom typescript esbuild vite rollup webpack lodash eslin
 const SCOPES: Record<string, string[]> = {
   "@babel": "core parser traverse types generator template helpers runtime preset-env preset-react plugin-transform-runtime compat-data code-frame".split(" "),
   "@types": "node react react-dom jest lodash express estree json-schema babel__core ws".split(" "),
-  "@esbuild": ["darwin-arm64"],
-  "@swc": "core core-darwin-arm64 helpers".split(" "),
+  "@esbuild": ["linux-x64-gnu"],
+  "@swc": "core core-linux-x64-gnu helpers".split(" "),
   "@typescript-eslint": "parser eslint-plugin typescript-estree scope-manager utils types visitor-keys".split(" "),
-  "@next": "env swc-darwin-arm64 font".split(" "),
-  "@img": "sharp-darwin-arm64 sharp-libvips-darwin-arm64".split(" "),
+  "@next": "env swc-linux-x64-gnu font".split(" "),
+  "@img": "sharp-linux-x64-gnu sharp-libvips-linux-x64-gnu".split(" "),
   "@radix-ui": "react-dialog react-popover react-tooltip react-select primitive react-slot".split(" "),
-  "@rollup": "rollup-darwin-arm64 pluginutils".split(" "),
+  "@rollup": "rollup-linux-x64-gnu pluginutils".split(" "),
   "@jest": "core environment expect reporters transform types".split(" "),
 };
 const PKG_SUB = "lib dist src esm cjs types build bin locales test modules internal utils helpers plugins compiled umd".split(" ");
-const PROJECTS = "atlas-api atlas-web billing-service dotfiles infra-terraform relay-server diskspace.cc photo-sorter blog advent-of-code design-system mobile-app data-pipeline ml-experiments zyno-dashboard chrome-extension cli-tools notes-app rust-playground go-workers old-portfolio invoice-generator home-automation kubernetes-manifests weather-bot game-jam-2024 slides".split(" ");
 const WORDS = "assets images components utils lib core common shared models views controllers services handlers routes api internal pkg cmd config scripts docs fixtures data migrations templates static public styles icons fonts locales tests mocks schemas workers jobs storage cache tmp logs archive old backup exports reports drafts 2021 2022 2023 2024 2025 misc vendor third_party proto generated".split(" ");
-const CACHES = "com.apple.Safari com.apple.bird com.apple.akd com.apple.nsurlsessiond com.apple.helpd com.apple.iconservices.store com.apple.ap.adprivacyd com.apple.parsecd com.apple.Music com.apple.dt.Xcode com.apple.python com.spotify.client com.google.Chrome com.microsoft.VSCode com.tinyspeck.slackmacgap com.figma.Desktop com.docker.docker Homebrew pip yarn ms-playwright go-build node-gyp JetBrains CloudKit org.swift.swiftpm typescript electron com.openai.chat zoom.us com.hnc.Discord company.thebrowser.Browser Firefox GeoServices".split(" ");
-const APPSUP = "Slack Code Google Spotify discord Figma JetBrains MobileSync Steam zoom.us Arc obsidian Claude Postman Docker Desktop CrashReporter com.apple.sharedfilelist Caches Firefox 1Password Raycast".split(" ");
-const CONTAINERS = "com.docker.docker com.apple.mail com.apple.Notes com.apple.Safari com.apple.photoanalysisd com.apple.mediaanalysisd com.apple.Maps com.apple.news com.apple.stocks com.apple.weather com.apple.iWork.Pages com.apple.iWork.Keynote com.microsoft.Word com.microsoft.Excel com.apple.Preview".split(" ");
-const APPS = "Xcode.app Docker.app Google Chrome.app Slack.app Visual Studio Code.app Figma.app Spotify.app Arc.app Logic Pro.app Final Cut Pro.app Microsoft Word.app Microsoft Excel.app Zoom.app Discord.app Steam.app Blender.app Affinity Photo 2.app OBS.app Obsidian.app 1Password.app".split(" ").reduce<string[]>((a, w) => {
-  // re-join multi-word app names split above
-  if (a.length && !a[a.length - 1].endsWith(".app")) a[a.length - 1] += " " + w;
-  else a.push(w);
-  return a;
-}, []);
-const SYS_NAMES = "Frameworks PrivateFrameworks Resources lib share bin Library Extensions Fonts Caches db var log etc include Modules en.lproj Assets CoreServices Kernels Speech Templates Updates Filesystems Plugins Components".split(" ");
-const ARTISTS = "Radiohead Bonobo Khruangbin Phoebe Bridgers Nils Frahm Tycho Fleetwood Mac Daft Punk Burial Little Simz Jon Hopkins Floating Points Massive Attack Beach House Bon Iver".split(" ");
+
+// Server vocabulary
+const LCACHES = "pip go-build yarn node-gyp ms-playwright puppeteer huggingface torch typescript JetBrains pre-commit mesa_shader_cache thumbnails vscode-server".split(" ");
+const LCACHE_SUB = ["_cacache", "content-v2", "index-v5", "wheels", "http-v2", "blobs", "tmp", "v1", "downloads", "pkg"];
+const LWORDS = "conf.d sites-enabled cache lib log tmp data backup old archive state spool lock www html uploads storage sessions queue dumps certs modules plugins scripts bin share".split(" ");
+const LSYS_NAMES = "lib share bin include local src libexec x86_64-linux-gnu python3 python3.12 dist-packages site-packages locale terminfo zoneinfo perl5 systemd gcc doc man modules".split(" ");
+const LDIFF_NAMES = "lib share bin local node_modules python3 site-packages dist-packages app src etc cache include x86_64-linux-gnu".split(" ");
+const LAYER_BIGS = ["libtorch_cpu.so", "node", "libLLVM-17.so.1", "chromium", "libxul.so", "model.safetensors", "mongod", "libicudata.so.72", "ffmpeg", "libcudnn_engines.so.9"];
+const DEB_PKGS = "linux-image-6.8.0-45-generic linux-modules-6.8.0-45-generic linux-headers-6.8.0-45 postgresql-16 docker-ce containerd.io nginx-core libc6-dev gcc-13 python3.12 nodejs openjdk-17-jre-headless libllvm17 google-cloud-cli grafana".split(" ");
+/** median size of one big file in a layer's usr/ (log-normal) */
+const LAYER_MEDIAN = 300 * MB;
+/** json.log size of each of the seven containers, GB; the busiest first */
+const CONTAINER_LOG_GB = [10, 5, 2.2, 1.0, 0.5, 0.3, 0.2];
+const CRASH_PROCS = "node postgres python3 nginx".split(" ");
+const LSYS_LIBS = "LLVM icudata clang-cpp python3.12 stdc++ crypto gtk-3".split(" ");
+const LSYS_SHARE = "locale-archive icudt74l.dat mime.cache fonts.pack terminfo.db".split(" ");
 
 // ---- dir kinds ---------------------------------------------------------------------
 enum K {
-  VolRoot, Home, Library, Caches, CacheEntry, AppSupport, Containers, Container, Docker, Chain, Developer, Xcode, Derived, DerivedProj, Sim, Projects, Project, NodeModules, Scope, Pkg, PkgSub, Git, GitObjects, GitShard, GitPack, Src, Movies, FcpBundle, Pictures, PhotosLib, PhotoShard, Music, Artist, Album, Documents, Downloads, Generic, System, Apps, AppBundle, Users, Denied, Volumes, Trash, GoMod, Backup, BackupShard,
+  Generic, Caches, CacheEntry, NodeModules, Scope, Pkg, PkgSub, Src,
+  LRoot, LBoot, LHomeRoot, LHome, LApp, LReleases, LRelease, LBackups, LOpt, LVendor, LVendorVar, LSnap, LTmp, LUsr, LSys, LVar, LVarLib, LDocker, LOverlay, LLayer, LDiff, LLayerUsr, LGen, LContainers, LContainer, LVolumes, LVolume, LVolData, LPg, LPgVer, LPgMain, LPgBase, LPgDb, LPgWal, LLog, LNginx, LPgLog, LJournal, LJournalId, LCache, LApt, LDeb, LCrash, LDataVol, LEmpty,
 }
 
-const STRUCTURAL = new Set<K>([K.VolRoot, K.Home, K.Users, K.Volumes, K.Library, K.Containers, K.Docker, K.Chain, K.Backup, K.AppSupport, K.Developer, K.Xcode, K.Movies, K.Pictures, K.PhotosLib, K.Music, K.Projects, K.Project, K.Derived]);
+const STRUCTURAL = new Set<K>([K.LRoot, K.LHomeRoot, K.LHome, K.LApp, K.LReleases, K.LRelease, K.LBackups, K.LVar, K.LVarLib, K.LDocker, K.LOverlay, K.LLayer, K.LDiff, K.LLayerUsr, K.LContainers, K.LContainer, K.LVolumes, K.LVolume, K.LVolData, K.LPg, K.LPgVer, K.LPgMain, K.LPgBase, K.LPgDb, K.LPgWal, K.LLog, K.LNginx, K.LPgLog, K.LJournal, K.LJournalId, K.LCache, K.LApt, K.LDeb, K.LCrash, K.LOpt, K.LVendor, K.LVendorVar, K.LBoot, K.LDataVol, K.LTmp]);
 
 interface FileProfile {
   n: [number, number];
@@ -114,29 +125,28 @@ const P = {
   pkg: { n: [2, 30], median: 7 * KB, sigma: 1.7, ext: ["js", "d.ts", "map", "json", "md", "mjs", "cjs"] } as FileProfile,
   src: { n: [1, 24], median: 5 * KB, sigma: 1.4, ext: ["ts", "tsx", "go", "rs", "py", "swift", "json", "md", "css"] } as FileProfile,
   cache: { n: [3, 160], median: 48 * KB, sigma: 2.3, ext: ["db", "cache", "data", "bin", "sqlite", "dat"] } as FileProfile,
-  derived: { n: [2, 40], median: 40 * KB, sigma: 1.6, ext: ["o", "swiftmodule", "swiftdoc", "dia", "d", "pcm", "a"] } as FileProfile,
-  movies: { n: [3, 18], median: 700 * MB, sigma: 1.1, ext: ["mov", "mp4", "m4v"] } as FileProfile,
-  render: { n: [4, 40], median: 90 * MB, sigma: 1.2, ext: ["mov", "fcpcache", "plist"] } as FileProfile,
-  photo: { n: [300, 1400], median: 3.2 * MB, sigma: 0.55, ext: ["heic", "heic", "heic", "jpeg", "mov", "png"] } as FileProfile,
-  thumb: { n: [150, 1100], median: 140 * KB, sigma: 0.6, ext: ["jpeg", "heic"] } as FileProfile,
-  music: { n: [6, 18], median: 9 * MB, sigma: 0.5, ext: ["m4a", "mp3", "flac"] } as FileProfile,
-  docs: { n: [3, 60], median: 300 * KB, sigma: 1.7, ext: ["pdf", "docx", "xlsx", "key", "pages", "txt", "md", "png", "jpg", "csv"] } as FileProfile,
-  downloads: { n: [10, 70], median: 6 * MB, sigma: 2.4, ext: ["dmg", "zip", "pdf", "pkg", "png", "jpg", "mp4", "tar.gz", "csv"] } as FileProfile,
-  generic: { n: [0, 24], median: 60 * KB, sigma: 2.1, ext: ["dat", "json", "plist", "db", "log", "bin", "txt"] } as FileProfile,
-  system: { n: [2, 50], median: 30 * KB, sigma: 1.9, ext: ["dylib", "plist", "strings", "nib", "car", "tbd", "bundle"] } as FileProfile,
-  git: { n: [4, 60], median: 1.8 * KB, sigma: 1.4, ext: [""] } as FileProfile,
-  app: { n: [1, 30], median: 120 * KB, sigma: 2.4, ext: ["dylib", "plist", "nib", "car", "strings", "framework", "pak", "dat"] } as FileProfile,
-  backup: { n: [40, 255], median: 300 * KB, sigma: 1.8, ext: [""] } as FileProfile,
+  lgeneric: { n: [0, 24], median: 40 * KB, sigma: 2.1, ext: ["conf", "log", "so", "json", "py", "txt", "gz", "pyc", "h"] } as FileProfile,
+  ltiny: { n: [0, 6], median: 4 * KB, sigma: 1.2, ext: ["conf", "log", "json", "db", "lock"] } as FileProfile,
+  layer: { n: [0, 30], median: 260 * KB, sigma: 2.2, ext: ["so", "py", "js", "h", "json", "pyc", "txt", "a"] } as FileProfile,
+  lsys: { n: [2, 50], median: 30 * KB, sigma: 1.9, ext: ["so", "py", "h", "mo", "gz", "pc", "txt"] } as FileProfile,
+  wal: { n: [60, 100], median: 16 * MB, sigma: 0.001, ext: [""] } as FileProfile,
+  pgrel: { n: [12, 18], median: 1 * GB, sigma: 0.02, ext: [""] } as FileProfile,
+  pgrel2: { n: [3, 7], median: 1 * GB, sigma: 0.02, ext: [""] } as FileProfile,
+  journal: { n: [28, 40], median: 128 * MB, sigma: 0.03, ext: ["journal"] } as FileProfile,
+  deb: { n: [24, 70], median: 38 * MB, sigma: 1.3, ext: ["deb"] } as FileProfile,
+  crash: { n: [3, 7], median: 0.9 * GB, sigma: 0.45, ext: ["crash"] } as FileProfile,
+  dump: { n: [3, 6], median: 1.1 * GB, sigma: 0.15, ext: ["sql.gz"] } as FileProfile,
+  upload: { n: [150, 700], median: 1.2 * MB, sigma: 1.0, ext: ["jpg", "png", "pdf", "webp", "mp4"] } as FileProfile,
 };
 
-const BULK = new Set<FileProfile>([P.pkg, P.src, P.derived, P.generic, P.system, P.cache, P.docs, P.git, P.tiny]);
-
-const HEX16 = "0123456789ABCDEF".split("");
+const BULK = new Set<FileProfile>([P.lgeneric, P.ltiny, P.layer, P.lsys, P.pkg, P.src, P.cache, P.tiny]);
 
 interface KidSpec {
   name: string;
   kind: K;
   flags?: number;
+  /** per-dir hint kept in Gen.extra */
+  extra?: string;
 }
 
 class Gen {
@@ -154,17 +164,21 @@ class Gen {
   pool: number[] = [];
   nextId = 1;
   denied = 0;
+  /** children announced as other-device mounts (pseudo filesystems, separate volumes) */
+  skipped = 0;
+  mountAbove = new Uint8Array(0);
   folds: { id: number; left: number }[] = [];
   totals = { dirs: 0, files: 0, alloc: 0, apparent: 0 };
 
   readonly bulkScale: number;
 
-  constructor(readonly target: number, readonly rootKind: K, readonly rootName: string, readonly fdaDenied: boolean, seed: number, bulkBase = target) {
+  constructor(readonly target: number, readonly rootKind: K, readonly rootName: string, seed: number, bulkBase = target) {
     this.rng = new Rng(seed);
     this.bulkScale = Math.max(0.3, Math.min(1, 30000 / Math.max(1, bulkBase)));
     const cap = target + 4096;
     this.kind = new Uint8Array(cap);
     this.depth = new Uint8Array(cap);
+    this.mountAbove = new Uint8Array(cap);
     this.parent = new Int32Array(cap);
     this.ownAlloc = new Float64Array(cap);
     this.ownApparent = new Float64Array(cap);
@@ -254,17 +268,9 @@ class Gen {
     const depth = this.depth[id];
     const g = this.rng;
     let flags = 0;
-    let kids: KidSpec[] = [];
-    let prof: FileProfile = P.generic;
-    if (kind === K.Denied) {
-      flags = DIR_FLAG.READ_DENIED;
-      this.denied++;
-      prof = P.none;
-    } else {
-      [kids, prof] = this.spec(id, kind, depth);
-    }
+    let [kids, prof] = this.spec(id, kind, depth);
     // global budget: stop growing bulk dirs once we hit the target
-    // (structural paths like Docker.raw or the Photos library always resolve)
+    // (structural paths like the overlay2 layers or the Postgres data always resolve)
     if (!STRUCTURAL.has(kind)) {
       const room = this.target - this.nextId;
       if (room <= 0) kids = kids.filter((k) => k.flags);
@@ -302,18 +308,17 @@ class Gen {
     for (let i = 0; i < indiv.length && files.length < 8; i++) {
       const [nm, s] = indiv[i];
       if (s < MB) break;
-      const name = nm || this.fileName(prof);
+      let name = nm || this.fileName(prof);
+      // names are unique per folder: delete targeting finds the first match
+      for (let t = 0; t < 5 && files.some((f) => f.name === name); t++) name = nm ? name : this.fileName(prof);
+      if (files.some((f) => f.name === name)) continue;
       files.push({ name, alloc: Math.ceil(s / 4096) * 4096, apparent: s, flags: 0 });
     }
     if (files.length) this.listed.set(id, files);
     const fileCount = nFiles + big.length;
-    if (flags & DIR_FLAG.READ_DENIED) {
-      alloc = 0;
-      apparent = 0;
-    }
     this.ownAlloc[id] = Math.round(alloc);
     this.ownApparent[id] = Math.round(apparent);
-    this.ownFiles[id] = flags & DIR_FLAG.READ_DENIED ? 0 : fileCount;
+    this.ownFiles[id] = fileCount;
     this.add(this.ownFiles[id], this.ownAlloc[id], this.ownApparent[id], 1);
 
     // announce children
@@ -325,28 +330,42 @@ class Gen {
       this.depth[cid] = depth + 1;
       this.parent[cid] = id;
       this.names[cid] = k.name;
+      if (k.extra) this.extra[cid] = k.extra;
+      if (k.flags && k.flags & CHILD_FLAG.OTHER_DEVICE) {
+        this.skipped++;
+        for (let n = id; n >= 0 && !this.mountAbove[n]; n = this.parent[n]) this.mountAbove[n] = 1;
+      }
       dirs.push({ name: k.name, flags: k.flags ?? 0 });
       if (!k.flags) this.pool.push(cid);
     }
     return { k: 1, id, flags, ownAlloc: this.ownAlloc[id], ownApparent: this.ownApparent[id], ownFiles: this.ownFiles[id], entryErrors: 0, totalDirs: dirs.length, firstChildId: dirs.length ? first : 0, dirs, files };
   }
 
+  /** the dir is a mount point's ancestor: some descendant was announced as another device */
+  holdsMount(id: number): boolean {
+    return this.mountAbove[id] === 1;
+  }
+
   fileName(p: FileProfile): string {
     const g = this.rng;
     const ext = g.pick(p.ext);
     let base: string;
-    if (p === P.photo) base = `IMG_${g.int(1000, 9999)}`;
-    else if (p === P.movies || p === P.render) base = g.pick(["Screen Recording 2025-0", "Export ", "Interview take ", "Drone ", "Wedding cut ", "B-roll "]) + g.int(1, 98);
-    else if (p === P.music) base = `${String(g.int(1, 14)).padStart(2, "0")} ${g.pick(["Intro", "Night Drive", "Weightless", "Kerala", "Reckoner", "Says", "Lune", "Awake", "Sunday", "Glow"])}`;
-    else if (p === P.git || p === P.backup) return g.hex(38);
-    else if (p === P.downloads) base = g.pick(["Install ", "invoice-", "Screenshot 2025-", "statement-", "export-", "dataset-", "recording-", "slides-"]) + g.int(1, 400);
+    if (p === P.wal) return g.hex(24).toUpperCase();
+    else if (p === P.pgrel || p === P.pgrel2) return String(g.int(16384, 99999)) + (g.next() < 0.8 ? "." + g.int(1, 9) : "");
+    else if (p === P.journal) return `system@${g.hex(32)}-${g.hex(16)}-${g.hex(16)}.journal`;
+    else if (p === P.deb) return `${g.pick(DEB_PKGS)}_${g.int(1, 9)}.${g.int(0, 40)}.${g.int(0, 9)}-0ubuntu${g.int(1, 4)}_amd64.deb`;
+    // systemd-coredump style: the random id and pid keep names unique per folder
+    else if (p === P.crash) return `core.${g.pick(CRASH_PROCS)}.${g.pick([0, 33, 70, 1000])}.${g.hex(32)}.${g.int(1000, 99999)}.${1750000000 + g.int(0, 12_000_000)}.zst`;
+    else if (p === P.dump) return `app-prod-2025-${String(g.int(1, 12)).padStart(2, "0")}-${String(g.int(1, 28)).padStart(2, "0")}.sql.gz`;
+    else if (p === P.upload) base = `${g.hex(8)}-${g.pick(["avatar", "scan", "receipt", "banner", "export"])}`;
     else base = g.pick(WORDS) + (g.next() < 0.5 ? "-" + g.hex(4) : "");
     return ext ? `${base}.${ext}` : base;
   }
 
+  /** the Linux server tree: docker + logs + postgres dominate, like a box whose disk filled up */
   private spec(id: number, kind: K, depth: number): [KidSpec[], FileProfile] {
     const g = this.rng;
-    const k = (name: string, kind: K, flags?: number): KidSpec => ({ name, kind, flags });
+    const k = (name: string, kind: K, flags?: number, extra?: string): KidSpec => ({ name, kind, flags, extra });
     const many = (n: number, mk: (i: number) => KidSpec): KidSpec[] => {
       const out: KidSpec[] = [];
       const seen = new Set<string>();
@@ -359,207 +378,194 @@ class Gen {
       }
       return out;
     };
+    const nm = this.names[id];
+    const OTHER = CHILD_FLAG.OTHER_DEVICE;
+    const withBig = (p: FileProfile, big: () => [string, number][]): FileProfile => ({ ...p, big });
+    const jit = (x: number): number => x * (0.92 + g.next() * 0.16);
     const decay = (base: number) => Math.max(0, Math.round(base - depth * 0.9 + g.normal() * 1.5));
-    const fda = this.fdaDenied;
     switch (kind) {
-      case K.VolRoot:
-        return [[k("Applications", K.Apps), k("Library", K.System), k("System", K.System), k("Users", K.Users), k("Volumes", K.Volumes), k("opt", K.System), k("private", K.System), k("usr", K.System), k("cores", K.Denied), k(".Spotlight-V100", K.Denied), k(".fseventsd", K.Denied)], P.tiny];
-      case K.Users:
-        return [[k("alex", K.Home), k("Shared", K.Generic), k("maria", K.Denied), k("Guest", K.Denied)], P.none];
-      case K.Volumes:
-        return [[k("Backup Plus", K.Generic, CHILD_FLAG.OTHER_DEVICE), k("Shared", K.Generic, CHILD_FLAG.OTHER_DEVICE), k("Macintosh HD", K.Generic, CHILD_FLAG.REPARSE)], P.none];
-      case K.Home:
-        return [
-          [k("Library", K.Library), k("Projects", K.Projects), k("Movies", K.Movies), k("Pictures", K.Pictures), k("Music", K.Music), k("Documents", K.Documents), k("Downloads", K.Downloads), k("Desktop", K.Documents), k(".Trash", K.Trash), k(".npm", K.Caches), k(".cache", K.Caches), k("go", K.GoMod), k(".vscode", K.Generic), k(".docker", K.Generic), k("Applications", K.Apps)],
-          { ...P.tiny, n: [4, 14] },
-        ];
-      case K.Library:
-        return [
-          [
-            k("Caches", K.Caches),
-            k("Application Support", K.AppSupport),
-            k("Containers", K.Containers),
-            k("Developer", K.Developer),
-            k("Group Containers", K.AppSupport),
-            k("Mail", fda ? K.Denied : K.Generic),
-            k("Messages", fda ? K.Denied : K.Generic),
-            k("Safari", fda ? K.Denied : K.Generic),
-            k("Logs", K.Generic),
-            k("Mobile Documents", K.Documents),
-            k("Preferences", K.Generic),
-            k("Saved Application State", K.Generic),
-          ],
-          P.tiny,
-        ];
       case K.Caches:
-        return [many(g.int(16, 34), () => k(g.pick(CACHES), K.CacheEntry)), P.cache];
+        if (nm === ".npm") return [[k("_cacache", K.CacheEntry), k("_logs", K.Generic)], P.ltiny];
+        return [many(g.int(6, 12), () => k(g.pick(LCACHES), K.CacheEntry)), P.cache];
       case K.CacheEntry:
-        return [many(decay(6), () => k(g.next() < 0.5 ? g.hex(2) : g.pick(["Cache.db", "fsCachedData", "com.apple.metal", "blobs", "index", "Code Cache", "GPUCache", "_cacache", "content-v2", "wheels", "http-v2"]), K.CacheEntry)), P.cache];
-      case K.AppSupport:
-        return [many(g.int(10, 20), (i) => {
-          const n = i === 0 && this.names[id] === "Application Support" ? "MobileSync" : g.pick(APPSUP);
-          return k(n, n === "MobileSync" ? K.Backup : K.Generic);
-        }), P.tiny];
-      case K.Backup:
-        return [[k("Backup", K.Chain)], P.none];
-      case K.Containers:
-        return [many(g.int(10, 15), (i) => {
-          const n = i === 0 ? "com.docker.docker" : g.pick(CONTAINERS);
-          return k(n, n === "com.docker.docker" ? K.Docker : n === "com.apple.Safari" && fda ? K.Denied : K.Container);
-        }), P.none];
-      case K.Container:
-        return [[k("Data", K.Generic)], P.tiny];
-      case K.Docker:
-        return [[k("Data", K.Chain)], P.tiny];
-      case K.Chain: {
-        // fixed single-path chains ending in a huge file
-        const pth = this.path(id, "");
-        if (pth.endsWith("com.docker.docker/Data")) return [[k("vms", K.Chain), k("log", K.Generic)], P.tiny];
-        if (pth.endsWith("Data/vms")) return [[k("0", K.Chain)], P.none];
-        if (pth.endsWith("vms/0")) return [[k("data", K.Chain)], { ...P.tiny, big: () => [["console-ring", 4 * MB]] }];
-        if (pth.endsWith("0/data")) return [[], { ...P.none, big: () => [["Docker.raw", 61.4 * GB]] }];
-        if (pth.endsWith("MobileSync/Backup")) return [[k(g.hex(8).toUpperCase() + "-" + g.hex(16).toUpperCase(), K.Chain), k(g.hex(8).toUpperCase() + "-" + g.hex(16).toUpperCase(), K.Chain)], P.none];
-        if (/MobileSync\/Backup\/[0-9A-F-]+$/.test(pth)) return [many(64, (i) => k(g.hex(1) + HEX16[i % 16].toLowerCase(), K.BackupShard)), { ...P.tiny, big: () => [["Manifest.db", 210 * MB]] }];
-        return [[], P.generic];
-      }
-      case K.Developer:
-        return [[k("Xcode", K.Xcode), k("CoreSimulator", K.Sim)], P.none];
-      case K.Xcode:
-        return [[k("DerivedData", K.Derived), k("iOS DeviceSupport", K.Generic), k("Archives", K.Generic), k("UserData", K.Generic)], P.tiny];
-      case K.Derived:
-        return [many(g.int(8, 18), () => k(`${g.pick(["Atlas", "Weather", "Notes", "Relay", "Scanner", "Widgets", "Camera", "Kit"])}-${g.hex(28).replace(/[0-9]/g, (c) => "abcdefghij"[+c])}`, K.DerivedProj)), P.none];
-      case K.DerivedProj:
-        return [many(decay(11), () => k(g.pick(["Build", "Index.noindex", "Intermediates.noindex", "Products", "Debug-iphonesimulator", "Objects-normal", "arm64", "SourcePackages", "checkouts", "ModuleCache.noindex", g.hex(10)]), K.DerivedProj)), P.derived];
-      case K.Sim:
-        return [many(g.int(4, 9), () => k(`${g.hex(8)}-${g.hex(4)}-${g.hex(4)}-${g.hex(4)}-${g.hex(12)}`.toUpperCase(), K.Generic)), P.tiny];
-      case K.Projects:
-        return [many(g.int(18, 28), () => k(g.pick(PROJECTS), K.Project)), P.tiny];
-      case K.Project: {
-        const kids = [k("src", K.Src), k(".git", K.Git)];
-        if (g.next() < 0.75) kids.push(k("node_modules", K.NodeModules));
-        if (g.next() < 0.5) kids.push(k(g.pick(["dist", "build", "out"]), K.Src));
-        if (g.next() < 0.5) kids.push(k("test", K.Src));
-        if (g.next() < 0.3) kids.push(k("docs", K.Src));
-        if (g.next() < 0.18) kids.push(k("target", K.DerivedProj));
-        if (g.next() < 0.2) kids.push(k(".next", K.DerivedProj));
-        if (g.next() < 0.3) kids.push(k("public", K.Documents));
-        return [kids, { ...P.src, n: [3, 14] }];
-      }
+        return [many(decay(6), () => k(g.next() < 0.5 ? g.hex(2) : g.pick(LCACHE_SUB), K.CacheEntry)), P.cache];
       case K.NodeModules: {
-        const n = depth > 6 ? g.int(2, 12) : g.int(120, 640);
+        const n = depth > 8 ? g.int(2, 12) : g.int(50, 150);
         const kids = many(n, () => {
-          if (g.next() < 0.12) {
-            const scopes = Object.keys(SCOPES);
-            return k(g.pick(scopes), K.Scope);
-          }
+          if (g.next() < 0.12) return k(g.pick(Object.keys(SCOPES)), K.Scope);
           if (g.next() < 0.55) return k(g.pick(NPM), K.Pkg);
           return k(`${g.pick(["is-", "get-", "has-", "to-", "p-", "fast-", "@", "node-", ""])}${g.pick(WORDS)}${g.pick(["", "-js", "-utils", "-parser", "ify", "2", "-plugin"])}`.replace("@", ""), K.Pkg);
         });
         kids.push(k(".bin", K.Generic), k(".cache", K.CacheEntry));
         return [kids, P.tiny];
       }
-      case K.Scope: {
-        const nm = this.names[id];
+      case K.Scope:
         return [(SCOPES[nm] ?? []).map((s) => k(s, K.Pkg)), P.none];
-      }
       case K.Pkg: {
         const kids = many(g.int(1, 4), () => k(g.pick(PKG_SUB), K.PkgSub));
         if (g.next() < 0.06 && depth < 8) kids.push(k("node_modules", K.NodeModules));
-        const nm = this.names[id];
         const big: [string, number][] = [];
-        if (/esbuild|darwin-arm64|swc|sharp|libvips|typescript|playwright|electron|monaco|turbo/.test(nm)) big.push([g.pick(["index.node", "bin", "typescript.js", "lib.dom.d.ts", "libvips-cpp.dylib", "next-swc.darwin-arm64.node"]), g.logNormal(18 * MB, 0.7)]);
+        if (/esbuild|linux-x64|swc|sharp|libvips|typescript|playwright|electron|monaco|turbo/.test(nm)) big.push([g.pick(["index.node", "bin", "typescript.js", "lib.dom.d.ts", "libvips-cpp.so.42", "next-swc.linux-x64-gnu.node"]), g.logNormal(18 * MB, 0.7)]);
         return [kids, { ...P.pkg, big: () => big }];
       }
       case K.PkgSub:
         return [many(decay(3.5), () => k(g.pick(PKG_SUB), K.PkgSub)), P.pkg];
-      case K.Git:
-        return [[k("objects", K.GitObjects), k("refs", K.Generic), k("hooks", K.Generic), k("logs", K.Generic), k("info", K.Generic)], P.tiny];
-      case K.GitObjects:
-        return [[k("pack", K.GitPack), k("info", K.Generic), ...many(g.int(10, 90), () => k(g.hex(2), K.GitShard))], P.none];
-      case K.GitShard:
-        return [[], P.git];
-      case K.GitPack:
-        return [[], { ...P.none, big: () => { const s = g.logNormal(60 * MB, 1.3); return [[`pack-${g.hex(40)}.pack`, s], [`pack-${g.hex(40)}.idx`, s * 0.03]]; } }];
       case K.Src:
         return [many(decay(6.5), () => k(g.pick(WORDS), K.Src)), P.src];
-      case K.Movies:
-        return [[k("Screen Recordings", K.Generic), k("Final Cut Projects", K.FcpBundle), k("Exports", K.Generic), k("iMovie Library.imovielibrary", K.FcpBundle)], { ...P.movies, n: [4, 10] }];
-      case K.FcpBundle:
-        return [many(decay(5), () => k(g.pick(["Render Files", "Transcoded Media", "Original Media", "Analysis Files", "Peaks Data", "High Quality Media", g.pick(["Trip to Lisbon", "Wedding", "Client promo", "Kids 2024"])]), K.FcpBundle)), P.render];
-      case K.Pictures:
-        return [[k("Photos Library.photoslibrary", K.PhotosLib), k("Screenshots", K.Generic), k("Lightroom", K.Generic), k("Wallpapers", K.Generic)], { ...P.docs, n: [2, 8] }];
-      case K.PhotosLib: {
-        const nm = this.names[id];
-        if (nm === "Photos Library.photoslibrary") return [[k("originals", K.PhotosLib), k("resources", K.PhotosLib), k("database", K.Generic), k("private", K.Generic), k("scopes", K.Generic)], P.tiny];
-        if (nm === "resources") return [[k("derivatives", K.PhotosLib), k("renders", K.PhotosLib)], P.none];
-        return [HEX16.map((h) => k(h, K.PhotoShard)), P.none];
-      }
-      case K.PhotoShard: {
-        const par = this.names[this.parent[id]];
-        return [[], par === "originals" ? P.photo : P.thumb];
-      }
-      case K.Music:
-        return [[k("Music", K.Generic), k("Logic", K.Generic), k("GarageBand", K.Generic), k("Media", K.Artist)], P.tiny];
-      case K.Artist:
-        return [many(g.int(8, 15), () => k(g.pick(ARTISTS), K.Album)), P.none];
-      case K.BackupShard:
-        return [[], P.backup];
-      case K.Album:
-        return [[], P.music];
-      case K.Documents:
-        return [many(decay(7), () => k(g.pick(["Invoices", "Taxes 2024", "Contracts", "Receipts", "Scans", "Notes", "Presentations", "Archive", "Old", "Travel", "Manuals", "Resumes", ...WORDS]), K.Documents)), P.docs];
-      case K.Downloads:
-        return [many(g.int(4, 9), () => k(g.pick(["unzipped", "Archive", "drivers", "fonts", "assets", "old installers", "datasets"]), K.Documents)), {
-          ...P.downloads,
-          big: () => [["Xcode_16.2.xip", 3.1 * GB], ["ubuntu-24.04.1-desktop-arm64.iso", 2.9 * GB], ["Docker.dmg", 615 * MB], ["Figma.dmg", 245 * MB]],
-        }];
-      case K.Trash:
-        return [many(g.int(2, 6), () => k(g.pick(["old-project", "Untitled Folder", "export copy", "node_modules"]), K.Src)), { ...P.downloads, n: [2, 20] }];
-      case K.GoMod:
-        return [[k("pkg", K.Src), k("bin", K.Generic)], P.tiny];
-      case K.Apps:
-        return [many(g.int(10, 20), () => k(g.pick(APPS), K.AppBundle)), P.none];
-      case K.AppBundle:
-        return [[k("Contents", K.System)], { ...P.none, big: () => [["Assets.car", g.logNormal(380 * MB, 1.1)]] }];
-      case K.System: {
-        const nm = this.names[id];
-        const top: FileProfile | null =
-          depth === 1 && nm === "System"
-            ? { ...P.system, big: () => [["dyld_shared_cache_arm64e", 3.4 * GB], ["dyld_shared_cache_arm64e.symbols", 1.9 * GB], ["kernelcache", 92 * MB]] }
-            : depth === 1 && nm === "private"
-              ? { ...P.tiny, big: () => [["sleepimage", 2.1 * GB], ["swapfile0", 1 * GB], ["swapfile1", 1 * GB]] }
-              : null;
-        const res = this.systemKids(depth);
-        return [res, top ?? P.system];
-      }
       case K.Generic:
+        return [many(decay(5), () => k(g.pick(LWORDS), K.Generic)), P.lgeneric];
+      case K.LRoot:
+        // pseudo filesystems and other volumes show up as skipped mounts, as the real scanner reports them
+        return [
+          [k("boot", K.LBoot), k("data", K.Generic, OTHER), k("dev", K.Generic, OTHER), k("etc", K.Generic), k("home", K.LHomeRoot), k("lost+found", K.LEmpty), k("mnt", K.LSnap), k("opt", K.LOpt), k("proc", K.Generic, OTHER), k("root", K.Generic), k("run", K.Generic, OTHER), k("snap", K.LSnap), k("srv", K.Generic), k("sys", K.Generic, OTHER), k("tmp", K.LTmp), k("usr", K.LUsr), k("var", K.LVar)],
+          P.ltiny,
+        ];
+      case K.LBoot:
+        return [[k("grub", K.Generic), k("efi", K.Generic, OTHER)], withBig(P.ltiny, () => [["vmlinuz-6.8.0-45-generic", 14 * MB], ["vmlinuz-6.8.0-41-generic", 14 * MB], ["initrd.img-6.8.0-45-generic", jit(71 * MB)], ["initrd.img-6.8.0-41-generic", jit(70 * MB)], ["System.map-6.8.0-45-generic", 8 * MB]])];
+      case K.LSnap:
+        // squashfs loop mounts under /snap, the backup NFS share under /mnt
+        return [nm === "snap" ? [k("core22", K.Generic, OTHER), k("lxd", K.Generic, OTHER), k("snapd", K.Generic, OTHER), k("bin", K.LEmpty)] : [k("backup", K.Generic, OTHER)], P.none];
+      case K.LEmpty:
+        return [[], P.none];
+      case K.LHomeRoot:
+        return [[k("deploy", K.LHome), k("ubuntu", K.Generic)], P.none];
+      case K.LHome:
+        return [[k(".cache", K.Caches), k(".npm", K.Caches), k("app", K.LApp), k("backups", K.LBackups), k(".docker", K.Generic), k(".local", K.Generic), k(".config", K.Generic), k(".ssh", K.LEmpty)], { ...P.ltiny, n: [4, 14] }];
+      case K.LApp:
+        return [[k("releases", K.LReleases), k("shared", K.LDataVol), k("log", K.Generic)], P.ltiny];
+      case K.LReleases:
+        // Capistrano-style timestamped release dirs, oldest first
+        return [many(9, (i) => k(new Date(Date.UTC(2025, 2 + i, 3 + ((i * 5) % 20), 9, (i * 7) % 60, 12)).toISOString().replace(/\D/g, "").slice(0, 14), K.LRelease)), P.none];
+      case K.LRelease: {
+        const kids = [k("node_modules", K.NodeModules), k("dist", K.Src), k("src", K.Src), k("public", K.Src)];
+        if (g.next() < 0.55) kids.push(k(".next", K.Src));
+        return [kids, withBig({ ...P.src, n: [3, 14] }, () => [["app-release.tar.gz", g.logNormal(150 * MB, 0.35)], ["build-cache.tar", g.logNormal(160 * MB, 0.35)]])];
+      }
+      case K.LBackups:
+        return [[], P.dump];
+      case K.LOpt:
+        return [[k("acme-agent", K.LVendor), k("containerd", K.Generic)], P.none];
+      case K.LVendor:
+        return [[k("bin", K.Generic), k("lib", K.LSys), k("var", K.LVendorVar), k("etc", K.Generic)], withBig(P.ltiny, () => [["acme-agent", jit(340 * MB)]])];
+      case K.LVendorVar:
+        return [[], withBig(P.none, () => [["queue.db", jit(2.2 * GB)], ["spool.0001.dat", jit(820 * MB)]])];
+      case K.LTmp:
+        return [
+          [
+            ...many(3, () => k(`systemd-private-${g.hex(32)}-${g.pick(["nginx", "chrony", "systemd-logind"])}.service-${g.hex(6)}`, K.Generic)),
+            ...many(2, () => k(`npm-${g.int(1000, 99999)}-${g.hex(8)}`, K.Generic)),
+          ],
+          withBig(P.ltiny, () => [["pg_restore_20251002.sql", jit(1.1 * GB)], ["upload-cache.tar", jit(380 * MB)]]),
+        ];
+      case K.LUsr:
+        return [["bin", "lib", "share", "local", "sbin", "include", "libexec", "src"].map((n) => k(n, K.LSys, undefined, "usr")), P.ltiny];
+      case K.LSys: {
+        const n = Math.max(0, Math.round((depth < 3 ? 8 : 5) - depth * 0.8 + g.normal() * 1.4));
+        const kids = many(n, () => k(g.pick(LSYS_NAMES), K.LSys));
+        if (this.extra[id] === "usr" && nm === "lib")
+          return [kids, withBig(P.lsys, () => Array.from({ length: 7 }, (_, j): [string, number] => [`lib${LSYS_LIBS[j]}.so.${g.int(1, 19)}`, g.logNormal(110 * MB, 0.6)]))];
+        if (this.extra[id] === "usr" && nm === "share")
+          return [kids, withBig(P.lsys, () => Array.from({ length: 5 }, (_, j): [string, number] => [LSYS_SHARE[j] + "." + g.hex(3), g.logNormal(70 * MB, 0.7)]))];
+        return [kids, P.lsys];
+      }
+      case K.LVar:
+        return [[k("lib", K.LVarLib), k("log", K.LLog), k("cache", K.LCache), k("crash", K.LCrash), k("spool", K.Generic), k("tmp", K.Generic), k("mail", K.Generic), k("backups", K.Generic), k("www", K.Generic), k("snap", K.Generic)], P.ltiny];
+      case K.LVarLib:
+        return [[k("docker", K.LDocker), k("postgresql", K.LPg), k("apt", K.Generic), k("dpkg", K.Generic), k("snapd", K.Generic), k("containerd", K.Generic), k("systemd", K.Generic), k("logrotate", K.Generic), k("plocate", K.Generic), k("ubuntu-advantage", K.Generic)], P.ltiny];
+      case K.LDocker:
+        return [[k("overlay2", K.LOverlay), k("containers", K.LContainers), k("volumes", K.LVolumes), k("image", K.Generic), k("buildkit", K.Generic), k("network", K.Generic), k("tmp", K.LEmpty), k("plugins", K.LEmpty)], P.ltiny];
+      case K.LOverlay:
+        // the first few layers belong to running containers: their merged/ dirs are overlay mounts, so the agent refuses to delete the layers (and everything above them)
+        return [[...many(g.int(34, 42), (i) => k(g.hex(64), K.LLayer, undefined, i < 6 ? "live" : undefined)), k("l", K.LEmpty)], P.none];
+      case K.LLayer:
+        return [[k("diff", K.LDiff), k("work", K.LEmpty), ...(this.extra[id] === "live" ? [k("merged", K.LEmpty, OTHER)] : [])], P.ltiny];
+      case K.LDiff: {
+        const kids = [k("usr", K.LLayerUsr)];
+        if (g.next() < 0.4) kids.push(k("app", K.LGen));
+        if (g.next() < 0.3) kids.push(k("var", K.LGen));
+        if (g.next() < 0.3) kids.push(k("etc", K.LGen));
+        if (g.next() < 0.2) kids.push(k("opt", K.LGen));
+        return [kids, P.ltiny];
+      }
+      case K.LLayerUsr:
+        return [many(g.int(2, 4), () => k(g.pick(["lib", "share", "local", "bin", "src", "include"]), K.LGen)), withBig({ ...P.layer, n: [0, 6] }, () => {
+          // one or two big files; a second one never repeats the first name
+          const a = g.int(0, LAYER_BIGS.length - 1);
+          const names = [LAYER_BIGS[a], ...(g.next() < 0.5 ? [LAYER_BIGS[(a + g.int(1, LAYER_BIGS.length - 1)) % LAYER_BIGS.length]] : [])];
+          return names.map((n): [string, number] => [n, g.logNormal(LAYER_MEDIAN, 1.0)]);
+        })];
+      case K.LGen:
+        if (nm === "app" && depth === 7) return [[k("node_modules", K.NodeModules), k("dist", K.Src)], P.layer];
+        return [depth >= 12 ? [] : many(g.int(0, 3), () => k(g.pick(LDIFF_NAMES), K.LGen)), P.layer];
+      case K.LContainers:
+        return [many(7, (i) => k(g.hex(64), K.LContainer, undefined, String(i))), P.none];
+      case K.LContainer:
+        return [[k("checkpoints", K.LEmpty), k("mounts", K.LEmpty)], withBig(P.ltiny, () => [[`${nm}-json.log`, jit(CONTAINER_LOG_GB[Number(this.extra[id] ?? 6)] * GB)]])];
+      case K.LVolumes:
+        return [[...["app_uploads", "prometheus_data", "loki_chunks", "redis_data", "grafana_data"].map((n) => k(n, K.LVolume)), ...many(2, () => k(g.hex(64), K.LVolume))], P.ltiny];
+      case K.LVolume:
+        return [[k("_data", K.LVolData)], P.none];
+      case K.LVolData: {
+        const vol = this.names[this.parent[id]];
+        if (vol === "app_uploads") return [many(8, (i) => k(`2025-${String(i + 1).padStart(2, "0")}`, K.LDataVol)), P.none];
+        if (vol === "prometheus_data") return [[k("wal", K.LEmpty)], withBig(P.none, () => [[g.hex(26).toUpperCase(), jit(1.9 * GB)], [g.hex(26).toUpperCase(), jit(1.8 * GB)], [g.hex(26).toUpperCase(), jit(1.2 * GB)]])];
+        if (vol === "loki_chunks") return [[], withBig(P.none, () => [["index_19999.tsdb", jit(1.6 * GB)], ["index_19998.tsdb", jit(1.5 * GB)], [g.hex(16), jit(1.3 * GB)]])];
+        if (vol === "redis_data") return [[], withBig(P.none, () => [["dump.rdb", jit(2.1 * GB)], ["appendonly.aof", jit(2.4 * GB)]])];
+        return [[], P.ltiny];
+      }
+      case K.LDataVol:
+        // a month of uploads, or the root of a data volume / shared dir
+        if (/^\d{4}-/.test(nm)) return [[], P.upload];
+        return [many(4, (i) => k(["uploads", "backups", "exports", "media"][i], K.Generic)), withBig(P.ltiny, () => [["storage.dump", g.logNormal(350 * MB, 0.5)]])];
+      case K.LPg:
+        return [[k("16", K.LPgVer)], P.none];
+      case K.LPgVer:
+        return [[k("main", K.LPgMain)], P.none];
+      case K.LPgMain:
+        return [[k("base", K.LPgBase), k("pg_wal", K.LPgWal), k("global", K.LEmpty), k("pg_xact", K.LEmpty), k("pg_stat", K.LEmpty)], P.ltiny];
+      case K.LPgBase:
+        return [["1", "4", "5", "16384", "16401"].map((n) => k(n, K.LPgDb)), P.none];
+      case K.LPgDb:
+        return [[], nm === "16384" ? P.pgrel : nm === "16401" ? P.pgrel2 : { ...P.lgeneric, n: [40, 120] }];
+      case K.LPgWal:
+        return [[], P.wal];
+      case K.LLog:
+        return [
+          [k("nginx", K.LNginx), k("journal", K.LJournal), k("postgresql", K.LPgLog), k("apt", K.Generic), k("letsencrypt", K.Generic), k("unattended-upgrades", K.Generic), k("sysstat", K.Generic)],
+          withBig(P.ltiny, () => [["syslog.1", jit(3.1 * GB)], ["syslog", jit(640 * MB)], ["kern.log.1", jit(410 * MB)], ["syslog.2.gz", jit(290 * MB)], ["btmp", jit(180 * MB)], ["ufw.log.1", jit(210 * MB)], ["auth.log.1", jit(95 * MB)]]),
+        ];
+      case K.LNginx:
+        return [[], withBig(P.none, () => [["access.log.1", jit(5.2 * GB)], ["access.log", jit(1.3 * GB)], ["access.log.2.gz", jit(410 * MB)], ["access.log.3.gz", jit(402 * MB)], ["access.log.4.gz", jit(388 * MB)], ["error.log.1", jit(380 * MB)]])];
+      case K.LPgLog:
+        return [[], withBig(P.none, () => [["postgresql-16-main.log.1", jit(1.1 * GB)], ["postgresql-16-main.log", jit(230 * MB)], ["postgresql-16-main.log.2.gz", jit(140 * MB)]])];
+      case K.LJournal:
+        return [[k(g.hex(32), K.LJournalId)], P.none];
+      case K.LJournalId:
+        return [[], P.journal];
+      case K.LCache:
+        return [[k("apt", K.LApt), k("man", K.Generic), k("debconf", K.Generic), k("nginx", K.Generic), k("pip", K.Generic)], P.ltiny];
+      case K.LApt:
+        return [[k("archives", K.LDeb)], withBig(P.none, () => [["pkgcache.bin", jit(56 * MB)], ["srcpkgcache.bin", jit(55 * MB)]])];
+      case K.LDeb:
+        return [[], P.deb];
+      case K.LCrash:
+        return [[], P.crash];
       default:
-        return [many(decay(5), () => k(g.pick(WORDS), K.Generic)), P.generic];
+        return [[], P.lgeneric];
     }
   }
-
-  private systemKids(depth: number): KidSpec[] {
-    const g = this.rng;
-    const n = Math.max(0, Math.round((depth < 2 ? 9 : 5.5) - depth * 0.9 + g.normal() * 1.5));
-    const out: KidSpec[] = [];
-    const seen = new Set<string>();
-    for (let i = 0; i < n; i++) {
-      const name = g.pick(SYS_NAMES);
-      if (seen.has(name)) continue;
-      seen.add(name);
-      out.push({ name, kind: g.next() < 0.004 ? K.Denied : K.System });
-    }
-    return out;
-  }
-
 }
 
 // ---- session ----------------------------------------------------------------------
 
+/** full-scan size of the Linux profile's `/` is 1.5x this (see scanStart) */
+const DEMO_TARGET = 24_000;
+
 const DEMO_VOLUMES: Volume[] = [
-  { path: "/", label: "Macintosh HD", fs: "apfs", total: 994_662_584_320, free: 658_262_584_320, used: 336_400_000_000, kind: "boot", readOnly: false },
-  { path: "/Volumes/Backup Plus", label: "Backup Plus", fs: "exfat", total: 2_000_398_934_016, free: 788_200_000_000, used: 1_212_198_934_016, kind: "external", readOnly: false },
-  { path: "/Volumes/Shared", label: "Shared", fs: "smbfs", total: 3_998_000_000_000, free: 1_102_000_000_000, used: 2_896_000_000_000, kind: "network", readOnly: false },
+  { path: "/", label: "/", fs: "ext4", total: 214_748_364_800, free: 15_000_000_000, used: 197_600_000_000, kind: "boot", readOnly: false },
+  { path: "/boot/efi", label: "efi", fs: "vfat", total: 535_822_336, free: 529_500_000, used: 6_322_336, kind: "internal", readOnly: false },
+  { path: "/data", label: "data", fs: "xfs", total: 536_870_912_000, free: 208_400_000_000, used: 328_470_912_000, kind: "internal", readOnly: false },
+  { path: "/mnt/backup", label: "backup", fs: "nfs4", total: 4_000_000_000_000, free: 1_460_000_000_000, used: 2_540_000_000_000, kind: "network", readOnly: false },
 ];
 
 export class MockSession implements Session {
@@ -579,20 +585,23 @@ export class MockSession implements Session {
   readonly info: AgentInfo;
 
   constructor(private o: MockOptions = {}) {
+    // This is what the agent reports after `sudo` relaunches it:
+    // running as root, but home and cwd stay the invoking user's.
     this.info = {
       proto: PROTO_VERSION,
       version: "0.1.0-demo",
-      os: "darwin",
-      arch: "arm64",
-      hostname: "Alexs-MacBook-Pro",
-      user: "alex",
-      invokingUser: "alex",
-      elevated: false,
-      elevation: "none",
-      fda: "denied",
+      os: "linux",
+      arch: "amd64",
+      hostname: "web-01",
+      user: "root",
+      invokingUser: "deploy",
+      elevated: true,
+      elevation: "sudo",
+      launcher: "cli",
+      fda: null,
       root: null,
-      cwd: { path: "/Users/alex/Projects" },
-      home: "/Users/alex",
+      cwd: { path: "/home/deploy/app" },
+      home: "/home/deploy",
       autoScan: o.autoScan ?? null,
       volumes: DEMO_VOLUMES,
       scan: null,
@@ -638,19 +647,20 @@ export class MockSession implements Session {
     let kind = K.Generic;
     let rootName = norm.split("/").pop() || norm;
     if (norm === "/") {
-      kind = K.VolRoot;
-      rootName = "Macintosh HD";
-    } else if (norm === this.info.home) kind = K.Home;
-    else if (norm.endsWith("/Projects")) kind = K.Projects;
-    else if (norm.startsWith("/Volumes/")) kind = K.Downloads;
-    else if (/Library$/.test(norm)) kind = K.Library;
+      kind = K.LRoot;
+      rootName = "/";
+    } else if (norm === this.info.home) kind = K.LHome;
+    else if (norm === "/data" || norm === "/mnt/backup") kind = K.LDataVol;
+    else if (norm === "/opt") kind = K.LOpt;
+    else if (norm === "/var") kind = K.LVar;
+    else if (norm === "/var/lib/docker") kind = K.LDocker;
+    else if (norm === "/var/log") kind = K.LLog;
+    else if (norm === "/home/deploy/app") kind = K.LApp;
     else if (/node_modules$/.test(norm)) kind = K.NodeModules;
-    else if (/Movies$/.test(norm)) kind = K.Movies;
-    else if (/Pictures$/.test(norm)) kind = K.Pictures;
     const vol = this.info.volumes.find((v) => v.path !== "/" && (norm === v.path || norm.startsWith(v.path + "/"))) ?? this.info.volumes[0];
-    const target = this.o.targetDirs ?? 160_000;
-    const scale = kind === K.VolRoot ? 1.5 : kind === K.Home ? 1 : kind === K.Projects ? 0.6 : 0.25;
-    const gen = new Gen(Math.round(target * scale), kind, rootName, this.info.fda === "denied" && !this.info.elevated, (this.o.seed ?? 7) + id * 7919, Math.round(target * Math.min(1, scale)));
+    const target = this.o.targetDirs ?? DEMO_TARGET;
+    const scale = kind === K.LRoot ? 1.5 : kind === K.LHome ? 1 : kind === K.LApp ? 0.6 : 0.25;
+    const gen = new Gen(Math.round(target * scale), kind, rootName, (this.o.seed ?? 7) + id * 7919, Math.round(target * Math.min(1, scale)));
     this.gen = gen;
     this.scanPath = norm;
     this.t0 = performance.now();
@@ -682,7 +692,7 @@ export class MockSession implements Session {
         this.scanTimer = 0;
         this.later(60, () => {
           if (this.gen !== gen) return;
-          ev.scanDone({ scanId: id, totals: { ...gen.totals }, denied: gen.denied, errors: 0, vanished: 0, skippedMounts: 2, hardlinksDeduped: 214, folded: 0, ms });
+          ev.scanDone({ scanId: id, totals: { ...gen.totals }, denied: gen.denied, errors: 0, vanished: 0, skippedMounts: gen.skipped, hardlinksDeduped: 214, folded: 0, ms });
         });
         return;
       }
@@ -720,6 +730,13 @@ export class MockSession implements Session {
     });
   }
 
+  /** the Trash the agent would report as DeleteStatus.where: under sudo, the invoking user's home on
+   * the root volume, else <mount>/.Trash-<uid> (internal/scan/trash_linux.go) */
+  private linuxTrashDir(): string {
+    const vol = this.info.volumes.find((v) => v.path !== "/" && (this.scanPath === v.path || this.scanPath.startsWith(v.path + "/")));
+    return vol ? `${vol.path}/.Trash-1000/files` : `${this.info.home}/.local/share/Trash/files`;
+  }
+
   private stopScan(): void {
     window.clearTimeout(this.scanTimer);
     window.clearInterval(this.progTimer);
@@ -738,18 +755,23 @@ export class MockSession implements Session {
     const reqId = ++this.reqId;
     const norm = path.replace(/\/+$/, "") || "/";
     const fixed: Record<string, string[]> = {
-      "/": ["Applications", "Library", "System", "Users", "Volumes", "opt", "private", "usr"],
-      "/Users": ["Shared", "alex"],
-      "/Users/alex": ["Applications", "Desktop", "Documents", "Downloads", "Library", "Movies", "Music", "Pictures", "Projects", "go"],
-      "/Users/alex/Projects": [...PROJECTS].sort(),
-      "/Volumes": ["Backup Plus", "Shared"],
-      "/Users/alex/Library": ["Application Support", "Caches", "Containers", "Developer", "Group Containers", "Logs", "Mobile Documents", "Preferences"],
+      "/": ["boot", "data", "dev", "etc", "home", "lost+found", "mnt", "opt", "proc", "root", "run", "snap", "srv", "sys", "tmp", "usr", "var"],
+      "/home": ["deploy", "ubuntu"],
+      "/home/deploy": [".cache", ".config", ".docker", ".local", ".npm", ".ssh", "app", "backups"],
+      "/home/deploy/app": ["log", "releases", "shared"],
+      "/mnt": ["backup"],
+      "/var": ["backups", "cache", "crash", "lib", "log", "mail", "snap", "spool", "tmp", "www"],
+      "/var/lib": ["apt", "containerd", "docker", "dpkg", "logrotate", "plocate", "postgresql", "snapd", "systemd", "ubuntu-advantage"],
+      "/var/lib/docker": ["buildkit", "containers", "image", "network", "overlay2", "plugins", "tmp", "volumes"],
+      "/var/log": ["apt", "journal", "letsencrypt", "nginx", "postgresql", "sysstat", "unattended-upgrades"],
+      "/usr": ["bin", "include", "lib", "libexec", "local", "sbin", "share", "src"],
+      "/opt": ["acme-agent", "containerd"],
     };
     let dirs = fixed[norm];
     if (!dirs) {
       const r = new Rng(hash(norm));
       const n = norm.split("/").length > 7 ? 0 : r.int(0, 9);
-      dirs = Array.from(new Set(Array.from({ length: n }, () => r.pick(WORDS)))).sort();
+      dirs = Array.from(new Set(Array.from({ length: n }, () => r.pick(LWORDS)))).sort();
     }
     const parent = norm === "/" ? null : norm.slice(0, norm.lastIndexOf("/")) || "/";
     return new Promise((res) => this.later(160, () => res({ reqId, path: norm, parent, dirs })));
@@ -769,7 +791,7 @@ export class MockSession implements Session {
         const remaining = Math.max(0, nFiles - listed.length);
         const want = Math.min(remaining, limit - listed.length);
         const budget = Math.max(0, own - usedA - 4096);
-        const prof = P.generic;
+        const prof = P.lgeneric;
         // spread the rest with a decaying distribution so it sums ≤ own
         let left = budget * 0.92;
         for (let i = 0; i < want && left > 4096; i++) {
@@ -778,7 +800,9 @@ export class MockSession implements Session {
           left -= a;
           usedA += a;
           usedP += a * 0.93;
-          files.push({ name: g.fileName(prof), alloc: a, apparent: Math.round(a * 0.93), flags: 0 });
+          let name = g.fileName(prof);
+          for (let t = 0; t < 5 && files.some((f) => f.name === name); t++) name = g.fileName(prof);
+          files.push({ name, alloc: a, apparent: Math.round(a * 0.93), flags: 0 });
         }
         files.sort((a, b) => b.alloc - a.alloc);
         res({ reqId, scanId, dirId, flags: 0, restCount: Math.max(0, nFiles - files.length), restAlloc: Math.max(0, own - usedA), restApparent: Math.max(0, ownApp - usedP), files });
@@ -839,13 +863,30 @@ export class MockSession implements Session {
       if (i >= items.length || d.stop) {
         for (let k = i; k < items.length; k++) results.push({ i: k, ok: false, code: "canceled", freedAlloc: 0, files: 0, dirs: 0 });
         if (deleted.length) ev.deleted({ scanId: d.req.scanId, job: d.job, items: deleted });
-        finish({ state: "done", done: i, freedAlloc: freed, current: undefined, results });
+        // like the real agent on Linux: report where the Trash put things
+        const trashed = d.req.mode === "trash" && results.some((r) => r.ok);
+        finish({ state: "done", done: i, freedAlloc: freed, current: undefined, results, ...(trashed ? { where: this.linuxTrashDir() } : {}) });
         return;
       }
       const it = items[i];
       const path = cur(i);
-      if (/\/Library\/Containers(\/|$)/.test(path)) {
-        results.push({ i, ok: false, code: "denied", freedAlloc: 0, files: 0, dirs: 0 });
+      const mountAbove = "dir" in it && g.holdsMount(it.dir);
+      const varId = g.kind.indexOf(K.LVendorVar, 1);
+      const imm = varId > 0 ? g.listed.get(varId)?.find((f) => f.name === "queue.db") : undefined;
+      let holdsImm = false;
+      if ("dir" in it && varId > 0) for (let n = varId; n > 0 && !holdsImm; n = g.parent[n]) holdsImm = n === it.dir;
+      if ("dir" in it && (mountAbove || isProtectedPath(path, this.info))) {
+        // system roots, home folders, mount points and every folder above one
+        results.push({ i, ok: false, code: "protected", freedAlloc: 0, files: 0, dirs: 0 });
+      } else if (imm && "name" in it && it.parent === varId && it.name === "queue.db") {
+        // immutable file (chattr +i): unlink fails with EPERM
+        results.push({ i, ok: false, code: "permission", freedAlloc: 0, files: 0, dirs: 0 });
+      } else if (imm && holdsImm && "dir" in it && d.req.mode === "permanent") {
+        // everything but the immutable file goes (a Trash move is one rename of the folder, which succeeds)
+        const a = tot.alloc[it.dir] - imm.alloc, ap = tot.apparent[it.dir] - imm.apparent, fl = tot.files[it.dir] - 1;
+        freed += a;
+        results.push({ i, ok: false, code: "partial", message: "queue.db: operation not permitted", freedAlloc: a, files: fl, dirs: tot.dirs[it.dir] });
+        deleted.push({ dir: it.dir, partial: true, freedAlloc: a, freedApparent: ap, files: fl, dirs: tot.dirs[it.dir] });
       } else if ("dir" in it) {
         const id = it.dir;
         if (id <= 0 || id >= g.nextId) results.push({ i, ok: false, code: "not_found", freedAlloc: 0, files: 0, dirs: 0 });
@@ -932,9 +973,11 @@ function hash(s: string): number {
   return h >>> 0;
 }
 
-/** synchronous full generation (tests, benchmarks): records in stream order */
-export function generateTree(targetDirs: number, opts: { root?: "home" | "volume"; seed?: number; fdaDenied?: boolean } = {}): { records: NodeRecord[]; totals: { dirs: number; files: number; alloc: number; apparent: number }; denied: number } {
-  const gen = new Gen(targetDirs, opts.root === "volume" ? K.VolRoot : K.Home, opts.root === "volume" ? "Macintosh HD" : "alex", opts.fdaDenied ?? true, opts.seed ?? 7);
+/** synchronous full generation (tests, benchmarks): records in stream order. `root: "home"` scans
+ * /home/deploy, `"root"` the whole of /. */
+export function generateTree(targetDirs: number, opts: { root?: "home" | "root"; seed?: number } = {}): { records: NodeRecord[]; totals: { dirs: number; files: number; alloc: number; apparent: number }; denied: number } {
+  const whole = opts.root === "root";
+  const gen = new Gen(targetDirs, whole ? K.LRoot : K.LHome, whole ? "/" : "deploy", opts.seed ?? 7, targetDirs);
   const records: NodeRecord[] = [];
   while (!gen.done) gen.emit(2000, records);
   return { records, totals: gen.totals, denied: gen.denied };

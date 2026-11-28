@@ -1,16 +1,16 @@
 # diskspace.cc
 
-See what's filling your disk, from any browser.
+See what's filling a server's disk, from your browser.
 
-Run one command (or open the desktop app). It prints a secure link. Open the link, pick a folder, and watch a treemap of your disk paint itself as the scan streams in. The link is end-to-end encrypted: the relay in the middle never sees a single file name.
+Run one command on the box, over SSH or at a console. It prints a secure link. Open the link in a browser on your laptop, pick a folder, and watch a treemap of the server's disk paint itself as the scan streams in. The link is end-to-end encrypted: the relay in the middle never sees a single file name.
 
 ```sh
-# macOS & Linux
-curl -fsSL https://diskspace.cc/run | sh
-
-# scan a folder straight away
-curl -fsSL https://diskspace.cc/run | sh -s -- ~/Projects
+ssh web-01
+curl -fsSL https://diskspace.cc/run | sh -s -- /
+# open the printed link on your own machine
 ```
+
+The same command works on a Linux or macOS machine in front of you; leave off the path to pick a folder in the browser.
 
 ```powershell
 # Windows: open PowerShell, then paste
@@ -19,19 +19,35 @@ irm https://diskspace.cc/run.ps1 | iex
 
 On Windows, paste the command into a PowerShell window. Microsoft Defender blocks the same command when it's launched as a one-liner from Run or `cmd` (`powershell -c "irm … | iex"`), because that's how "ClickFix" malware is delivered.
 
-Prefer not to use a terminal? Download the desktop app for [macOS](https://diskspace.cc/dl/gui/mac) or [Windows](https://diskspace.cc/dl/gui/windows).
+Prefer not to use a terminal on your own computer? Download the desktop app for [macOS](https://diskspace.cc/dl/gui/mac) or [Windows](https://diskspace.cc/dl/gui/windows).
+
+Want to see it first? [Try the demo](https://diskspace.cc/demo) with a made-up server.
 
 ## What you get
 
+- **Built for machines with no GUI.** The server runs one small binary; the treemap draws in a browser on any other device.
 - **A link, not an install.** The bootstrap script downloads the latest release for your OS/arch, verifies its SHA-256 against the release's `checksums.txt`, runs it from a temp dir and cleans up afterwards.
-- **You choose the privilege level.** If you aren't an administrator, diskspace asks whether to restart elevated (`sudo` / UAC / macOS admin prompt) or to continue with just your own files. Enter means "no". On macOS it also tells you whether Full Disk Access is granted and can open that setting.
-- **Pick what to scan.** The folder you started it from, your home folder, any mounted volume, or any other folder.
+- **You choose the privilege level.** If you aren't an administrator, diskspace asks whether to restart elevated (`sudo` right in your SSH session, UAC, or the macOS admin prompt) or to continue with just your own files. Enter means "no". On macOS it also tells you whether Full Disk Access is granted and can open that setting.
+- **Pick what to scan.** Any mounted volume, the folder you started it from, your home folder, or any other folder.
 - **Results stream in.** The treemap and list paint within a fraction of a second and fill in as the scan runs; nothing waits for the full scan.
 - **Clean up, with your say-so.** Right-click (or long-press) a folder or file to queue it for deletion, review the queue, then move it to the Trash / Recycle Bin or delete it permanently. Every request is approved on the scanned computer: type `y` in the terminal diskspace runs in, or answer a native dialog in the desktop app. The prompt shows the paths and sizes diskspace measured itself and the browser's verification code. A browser can ask; it can't approve. Without a terminal (e.g. `--quiet` under a service manager) deleting is off.
 - **Pause and resume.** Pause stops the scanner from opening new folders (reads in progress finish) and keeps the results so far on screen. Resume continues; Stop ends the scan. A paused scan stays paused across browser reloads, and the elapsed time leaves out the pause.
 - **Update notice.** The viewer, the desktop app and the CLI tell you when a newer stable release exists. The relay answers `GET /v1/latest` with `{"version":"0.1.2"}`. A viewer served by the agent itself (`--no-relay`) has no relay to ask and shows no banner.
+- **Gentle on production.** The scanner runs at low CPU and disk priority by default (`--priority normal` to go full speed), and the agent exits after 30 minutes without a browser (`--idle`).
 - **Fast.** A parallel, work-stealing scanner using the cheapest metadata calls each OS offers. On an M1 Mac it walks 1.1M entries in ~12 s, against ~105 s for `du -sk` on the same tree.
 - **Accurate.** Allocated (on-disk) and apparent sizes, hardlinks counted once, mount points and firmlinks not double-counted, junctions/symlinks never followed, unreadable folders reported instead of silently skipped.
+
+## Remote servers
+
+- **Open the link on your laptop, not the server.** The link works from any device that can reach diskspace.cc. On a terminal that can show it, the CLI also prints a QR code for your phone.
+- **Elevation over SSH.** Run it as a regular user and say yes to the sudo prompt, or pass `--elevate`. Elevated, anyone with the link can see the names of every file on the box; share it accordingly.
+- **Deletes are approved in the server's terminal.** Keep the SSH session open while you clean up; for a long session, run it inside `tmux` or `screen`. Started without a controlling terminal (a systemd unit, cron, `setsid`), deleting is off. Don't background it with `&` or `nohup`: it keeps the terminal but can't read your answer.
+- **It cleans up after itself.** It exits when you press Ctrl-C, or after 30 minutes with no browser connected (`--idle 2h`, or `--idle 0` to never exit).
+- **Keeping the box off diskspace.cc.** Self-host the relay (below), which also serves the bootstrap script: `curl -fsSL https://disk.example.com/run | sh -s -- --relay https://disk.example.com /`. Or run with `--no-relay`, which serves the viewer on `127.0.0.1:<port>` on the server; forward the same port number (`ssh -L <port>:127.0.0.1:<port> web-01`) and open the printed link on your laptop.
+
+## For AI agents
+
+When a user wants to see what is filling a disk, an agent can run `curl -fsSL https://diskspace.cc/run | sh -s -- --quiet --no-elevate /` in the background on the machine and hand the user the printed link. The link contains the decryption key: share it only with that user. Started without a controlling terminal, deleting is off; a user who wants to clean up should run the command in their own SSH session, since deletion prompts belong to them. Never answer one on the user's behalf. diskspace has no machine-readable output; for numbers of your own, use `du`. A summary for agents is published at [diskspace.cc/llms.txt](https://diskspace.cc/llms.txt).
 
 ## CLI
 
@@ -54,7 +70,7 @@ diskspace [flags] [path]
 ## How it works
 
 ```
- your computer                      relay (diskspace.cc)                 your browser
+ scanned machine                    relay (diskspace.cc)                 your browser
 ┌─────────────────┐   wss    ┌────────────────────────────┐   wss   ┌──────────────────────┐
 │ diskspace agent │◀────────▶│ pairs by session id,       │◀───────▶│ viewer (Web Worker)  │
 │  scanner        │ opaque   │ copies binary frames       │ opaque  │  X25519 + AES-GCM    │

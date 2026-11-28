@@ -31,7 +31,7 @@ function useDemo(host: { current: HTMLDivElement | null }, grid: { current: HTML
     const session = new MockSession({ targetDirs: DEMO_DIRS, durationMs: 15_000, quick: true, seed: 11 });
     let timer = 0;
     let final = 1;
-    const home = "/Users/alex";
+    const home = "/";
     session.start({
       state: () => undefined,
       agentInfo: () => session.scanStart(home),
@@ -65,7 +65,7 @@ function useDemo(host: { current: HTMLDivElement | null }, grid: { current: HTML
       error: () => undefined,
     });
     // first cycle has no known final size; estimate so the stretch is smooth
-    final = 150e9;
+    final = 185e9;
     return () => {
       window.clearTimeout(timer);
       session.close();
@@ -86,7 +86,7 @@ function detectTab(): Tab {
 }
 
 const COMMANDS: Record<Exclude<Tab, "desktop">, { cmd: string; note: string }> = {
-  unix: { cmd: "curl -fsSL https://diskspace.cc/run | sh", note: "Paste into Terminal. Add a path after sh -s -- to scan it straight away." },
+  unix: { cmd: "curl -fsSL https://diskspace.cc/run | sh", note: "Run it on the server (over SSH is fine), then open the link it prints in your laptop's browser. Add a path after sh -s -- to scan it straight away." },
   windows: { cmd: "irm https://diskspace.cc/run.ps1 | iex", note: "Open PowerShell and paste it there (Defender blocks it from Run or cmd). Nothing is installed; the binary is checked against published checksums." },
 };
 
@@ -94,7 +94,7 @@ function InstallCard() {
   const [tab, setTab] = useState<Tab>(detectTab);
   const [copied, setCopied] = useState(false);
   const tabs: [Tab, string][] = [
-    ["unix", "macOS & Linux"],
+    ["unix", "Linux & macOS"],
     ["windows", "Windows"],
     ["desktop", "Desktop app"],
   ];
@@ -141,7 +141,7 @@ function InstallCard() {
             <a class="btn" href="/dl/gui/windows">
               <Download /> Download for Windows
             </a>
-            <p class="install-note">The same scanner in a small window. macOS 11 or later, Windows 10 or later.</p>
+            <p class="install-note">For the computer in front of you: the same scanner in a small window. macOS 11 or later, Windows 10 or later.</p>
           </div>
         ) : (
           <>
@@ -246,11 +246,11 @@ function Landing() {
         </p>
         <div class="hero-copy">
           <Wordmark as="h1" size="hero" stretch={stretch} fit={150} />
-          <p class="pitch">See what's filling your disk, from any browser.</p>
-          <p class="sub">End-to-end encrypted; the relay never sees your file names.</p>
+          <p class="pitch">See what's filling a server's disk, from your browser.</p>
+          <p class="sub">Run one command on the box, open the link on your laptop. End-to-end encrypted; the relay never sees your file names.</p>
           <InstallCard />
           <p class="demo">
-            <a href="/demo">Try the demo</a> with a made-up Mac, no install needed.
+            <a href="/demo">Try the demo</a> with a made-up server, no install needed.
           </p>
         </div>
       </section>
@@ -260,23 +260,45 @@ function Landing() {
           <h2 id="how">How it works</h2>
           <ol class="steps">
             <li>
-              <h3>Run the command</h3>
-              <p>It downloads a small binary for your system, checks it against published checksums and starts it. Nothing is installed, and it exits when you close it.</p>
+              <h3>Run the command on the server</h3>
+              <p>Over SSH or at a console. It downloads a small binary for the server's OS, checks it against published checksums and starts it. Nothing is installed, and it exits when you close it.</p>
             </li>
             <li>
-              <h3>Open the link it prints</h3>
-              <p>The link carries a one-time key after the #. Your browser uses it to open an encrypted channel to your computer. Both sides show the same six-digit code so you can check nobody is in between.</p>
+              <h3>Open the link on your laptop</h3>
+              <p>The link carries a one-time key after the #. Your browser uses it to open an encrypted channel to the server. Both sides show the same six-digit code so you can check nobody is in between.</p>
             </li>
             <li>
               <h3>Pick a folder</h3>
-              <p>Choose the current folder, your home or a whole disk. The map fills in as the scan runs, so you can start digging before it finishes.</p>
+              <p>Choose a whole disk, any mount or any folder. The map fills in as the scan runs, so you can start digging before it finishes.</p>
             </li>
           </ol>
         </section>
 
+        <section aria-labelledby="servers">
+          <h2 id="servers">Built for headless servers</h2>
+          <div class="facts">
+            <div>
+              <h3>No GUI on the box</h3>
+              <p>The server runs one small binary. The treemap draws in the browser on your laptop.</p>
+            </div>
+            <div>
+              <h3>Gentle on production</h3>
+              <p>Scans at low CPU and disk priority by default, and exits on its own after 30 minutes without a viewer.</p>
+            </div>
+            <div>
+              <h3>sudo, right in your SSH session</h3>
+              <p>Not root? It offers to restart with sudo so nothing shows up as "no access". Press Enter to stay a standard user.</p>
+            </div>
+            <div>
+              <h3>Deletes are approved on the server</h3>
+              <p>Queue folders in the browser, then type y in the server's terminal. A browser can ask to delete; it can't approve.</p>
+            </div>
+          </div>
+        </section>
+
         <section aria-labelledby="relay">
           <h2 id="relay">What the relay can and can't see</h2>
-          <p class="lede">The relay at diskspace.cc only passes messages between your browser and your computer. Everything about your files is encrypted before it leaves your computer, with a key the relay never receives.</p>
+          <p class="lede">The relay at diskspace.cc only passes messages between your browser and the machine you're scanning. Everything about its files is encrypted before it leaves that machine, with a key the relay never receives.</p>
           <KeyDiagram />
           <div class="sees">
             <div>
@@ -284,24 +306,24 @@ function Landing() {
               <ul>
                 <li>That a session exists, and when it starts and ends</li>
                 <li>How much encrypted data passes through</li>
-                <li>The IP addresses of your browser and your computer</li>
+                <li>The IP addresses of your browser and the scanned machine</li>
               </ul>
             </div>
             <div>
               <h3>The relay can't see</h3>
               <ul>
                 <li>File or folder names, paths or sizes</li>
-                <li>Anything about your disk or what's on it</li>
+                <li>Anything about the disk or what's on it</li>
                 <li>The key in your link: browsers never send the part after #</li>
               </ul>
             </div>
           </div>
-          <p class="fine">The relay also serves this page's code. If you'd rather not rely on that, run diskspace with --local and your computer serves the page itself.</p>
+          <p class="fine">The relay also serves this page's code. If you'd rather not rely on that, run diskspace with --local and the scanned machine serves the page itself (on a remote box, open it through an SSH tunnel). To keep the box off diskspace.cc entirely, self-host the relay and pass --relay.</p>
         </section>
 
         <section aria-labelledby="desktop">
-          <h2 id="desktop">Desktop app</h2>
-          <p>Prefer a window to a terminal? The desktop app runs the same scanner and can show results right inside it.</p>
+          <h2 id="desktop">On the computer in front of you?</h2>
+          <p>The command works on your own Mac or Linux machine too. Prefer a window to a terminal? The desktop app runs the same scanner and can show results right inside it.</p>
           <div class="dl-row">
             <a class="btn btn-primary" href="/dl/gui/mac">
               <Download /> macOS

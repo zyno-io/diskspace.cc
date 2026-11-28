@@ -192,6 +192,12 @@ describe("deletion keys and protected folders", () => {
     const win = { os: "windows", home: "C:\\Users\\u", volumes: [{ path: "C:\\", label: "", fs: "", total: 0, free: 0, used: 0, kind: "boot" as const, readOnly: false }] };
     for (const p of ["C:\\", "C:\\Users", "C:\\Users\\u", "C:\\Users\\u\\AppData", "C:\\Windows", "C:\\Program Files (x86)", "C:\\ProgramData", "D:\\$Recycle.Bin"]) expect(isProtectedPath(p, win), p).toBe(true);
     for (const p of ["C:\\Users\\u\\AppData\\Local\\Temp", "C:\\Users\\u\\Projects", "C:\\games"]) expect(isProtectedPath(p, win), p).toBe(false);
+    const linux = { os: "linux", home: "/home/deploy", volumes: [{ path: "/", label: "", fs: "", total: 0, free: 0, used: 0, kind: "internal" as const, readOnly: false }, { path: "/mnt/backup", label: "", fs: "", total: 0, free: 0, used: 0, kind: "internal" as const, readOnly: false }] };
+    for (const p of ["/", "/boot", "/tmp", "/srv", "/snap", "/var", "/var/tmp", "/root", "/home", "/home/deploy", "/home/other", "/home/deploy/.config", "/home/deploy/.local", "/home/deploy/.local/share", "/home/deploy/.local/share/Trash", "/home/deploy/Downloads", "/root/.local", "/mnt", "/mnt/backup", "/usr/lib", "/usr/bin"]) expect(isProtectedPath(p, linux), p).toBe(true);
+    // case-sensitive on Linux, and a trailing slash on home is ignored
+    expect(isProtectedPath("/home/deploy/downloads", linux)).toBe(false);
+    expect(isProtectedPath("/srv/app/.config", { ...linux, home: "/srv/app/" })).toBe(true);
+    for (const p of ["/var/lib", "/var/log", "/var/lib/docker", "/home/deploy/app", "/home/deploy/.cache", "/home/deploy/.npm", "/home/deploy/Downloads/old", "/opt/acme-agent", "/root/.cache", "/data/uploads", "/srv/www", "/usr/lib/node_modules", "/usr/local"]) expect(isProtectedPath(p, linux), p).toBe(false);
   });
 });
 

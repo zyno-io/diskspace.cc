@@ -63,7 +63,8 @@ function boot(): void {
   let session: Session;
   if (demo) {
     const approve = params.get("approve");
-    session = new MockSession({ demoState: params.get("state"), autoScan: params.get("scan"), approve: approve === "no" ? "no" : approve ? Number(approve) : undefined });
+    const dirs = Number(params.get("dirs")); // tests: a bigger tree (?dirs=160000) to load the viewer
+    session = new MockSession({ demoState: params.get("state"), autoScan: params.get("scan"), approve: approve === "no" ? "no" : approve ? Number(approve) : undefined, ...(dirs > 0 ? { targetDirs: Math.min(dirs, 400_000) } : {}) });
   } else {
     const m = /^\/s\/([A-Za-z0-9_-]{8,64})\/?$/.exec(path);
     const sid = m?.[1] ?? "";

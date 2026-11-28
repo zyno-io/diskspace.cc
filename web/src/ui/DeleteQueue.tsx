@@ -317,10 +317,10 @@ function DialogBody({ ctl, r }: { ctl: Controller; r: DeleteRequestView }) {
     );
   }
 
-  return <Outcome ctl={ctl} r={r} s={s!} host={host} trash={trash} />;
+  return <Outcome ctl={ctl} r={r} s={s!} host={host} trash={trash} os={info?.os} />;
 }
 
-function Outcome({ ctl, r, s, host, trash }: { ctl: Controller; r: DeleteRequestView; s: DeleteStatus; host: string; trash: string }) {
+function Outcome({ ctl, r, s, host, trash, os }: { ctl: Controller; r: DeleteRequestView; s: DeleteStatus; host: string; trash: string; os?: string }) {
   const units = ctl.units.value;
   const close = () => ctl.closeRequest();
   const failed = (s.results ?? []).filter((x) => !x.ok);
@@ -328,7 +328,9 @@ function Outcome({ ctl, r, s, host, trash }: { ctl: Controller; r: DeleteRequest
   const freed = formatBytes(s.freedAlloc, units);
   // a job picked up after a reload: its mode is unknown, so say only what happened
   const adopted = r.names.length === 0;
-  const moved = adopted ? `${freed} done.` : r.mode === "trash" ? `Moved ${freed} to the ${trash}. Empty the ${trash} to free the space.` : `Deleted ${freed} permanently.`;
+  // a headless Linux host has no Trash to empty: say where the files went instead
+  const trashText = os === "linux" && s.where ? `Moved ${freed} to ${s.where}. Delete them there, or delete permanently, to free the space.` : `Moved ${freed} to the ${trash}. Empty the ${trash} to free the space.`;
+  const moved = adopted ? `${freed} done.` : r.mode === "trash" ? trashText : `Deleted ${freed} permanently.`;
   const foot = (
     <button class="btn btn-primary" onClick={close} autoFocus>
       {s.state === "done" && failed.length === 0 ? "Done" : "Close"}

@@ -80,7 +80,7 @@ func newFlagSet(o *Options, defaultRelay string, out io.Writer) *flag.FlagSet {
 	fs.StringVar(&o.ConfirmVia, "confirm-via", "", "(agent) app or console: the parent approves deletions over IPC")
 	fs.StringVar(&o.SID, "user-sid", "", "(Windows) the real user's `SID`, whose Recycle Bin is used")
 	fs.Usage = func() {
-		fmt.Fprintf(out, "Usage: diskspace [flags] [path]\n\nShows what is using your disk space in a browser, end-to-end encrypted.\n\nFlags:\n")
+		fmt.Fprintf(out, "Usage: diskspace [flags] [path]\n\nShows what is filling this machine's disk, in a browser on any device. End-to-end encrypted.\n\nFlags:\n")
 		fs.PrintDefaults()
 	}
 	return fs

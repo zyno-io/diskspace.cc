@@ -19,7 +19,7 @@ for (const vp of VIEWPORTS) {
     test.use({ viewport: { width: vp.width, height: vp.height }, deviceScaleFactor: vp.tag === "mobile" ? 2 : 1 });
 
     test("pause, paused state, resume", async ({ page }) => {
-      await page.goto("/viewer.html?demo&scan=/Users/alex");
+      await page.goto("/viewer.html?demo&scan=/home/deploy");
       await expect(page.getByRole("button", { name: "Pause" })).toBeVisible();
       await page.waitForTimeout(2500);
       await shot(page, `${vp.tag}-pause-running`);
@@ -41,7 +41,7 @@ for (const vp of VIEWPORTS) {
     });
 
     test("stop while paused", async ({ page }) => {
-      await page.goto("/viewer.html?demo&scan=/Users/alex");
+      await page.goto("/viewer.html?demo&scan=/home/deploy");
       await page.getByRole("button", { name: "Pause" }).click();
       await page.getByRole("button", { name: "Stop", exact: true }).click();
       await expect(page.locator(".meter")).toContainText("Scan stopped");

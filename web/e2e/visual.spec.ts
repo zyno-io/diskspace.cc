@@ -76,7 +76,7 @@ test.describe("states", () => {
   });
   test("volume scan", async ({ page }) => {
     await page.goto("/viewer.html?demo");
-    await page.getByRole("button", { name: /^Macintosh HD/ }).click();
+    await page.getByRole("button", { name: /^\/, / }).click();
     await expect(page.getByRole("button", { name: "Scan again" })).toBeVisible({ timeout: 150_000 });
     await page.waitForTimeout(1200);
     await shot(page, "desktop-volume-done");

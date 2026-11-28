@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 
-// Command diskspace shows what is using your disk space in a browser,
+// Command diskspace shows what is filling a machine's disk in a browser,
 // end-to-end encrypted through a relay that cannot read it.
 package main
 

@@ -259,7 +259,7 @@ func TestRenderConfirmShowsWarningsAndMore(t *testing.T) {
 	r.More, r.AtLeast, r.ViaRelay = 4, true, false
 	r.Warnings = []string{"Contains another volume or mount point, which is left alone."}
 	s := RenderConfirm(r)
-	for _, want := range []string{"… and 4 more", "at least", "! Contains another volume", "on this computer"} {
+	for _, want := range []string{"… and 4 more", "at least", "! Contains another volume", "through the local link"} {
 		if !strings.Contains(s, want) {
 			t.Errorf("lacks %q:\n%s", want, s)
 		}
