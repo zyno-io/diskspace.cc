@@ -31,7 +31,7 @@ function useDemo(host: { current: HTMLDivElement | null }, grid: { current: HTML
     const session = new MockSession({ targetDirs: DEMO_DIRS, durationMs: 15_000, quick: true, seed: 11 });
     let timer = 0;
     let final = 1;
-    const home = "/Users/alex";
+    const home = "/";
     session.start({
       state: () => undefined,
       agentInfo: () => session.scanStart(home),
@@ -65,7 +65,7 @@ function useDemo(host: { current: HTMLDivElement | null }, grid: { current: HTML
       error: () => undefined,
     });
     // first cycle has no known final size; estimate so the stretch is smooth
-    final = 150e9;
+    final = 185e9;
     return () => {
       window.clearTimeout(timer);
       session.close();

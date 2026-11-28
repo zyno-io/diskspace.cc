@@ -251,8 +251,8 @@ describe("TreeStore", () => {
     expect(s.size(0)).toBe(1000);
   });
 
-  test("mock stream respects protocol invariants and settles exactly", () => {
-    const g = generateTree(6000, { root: "volume" });
+  test.each(["darwin", "linux"] as const)("mock stream respects protocol invariants and settles exactly (%s)", (os) => {
+    const g = generateTree(6000, { root: "volume", os });
     const s = new TreeStore();
     s.reset({ ...started(), path: "/", rootName: "Macintosh HD" });
     const seen = new Set<number>([0]);

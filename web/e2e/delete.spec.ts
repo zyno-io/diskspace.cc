@@ -13,7 +13,7 @@ const shot = (page: Page, name: string) => page.screenshot({ path: join(SHOTS, `
 const row = (page: Page, label: string) => page.locator(".row:not([hidden])").filter({ has: page.locator(".label", { hasText: new RegExp(`^${label}$`) }) }).first();
 
 async function finishedScan(page: Page, approve = 3500) {
-  await page.goto(`/viewer.html?demo&scan=/Users/alex&approve=${approve}`);
+  await page.goto(`/viewer.html?demo&os=mac&scan=/Users/alex&approve=${approve}`);
   await expect(page.getByRole("button", { name: "Scan again" })).toBeVisible({ timeout: 120_000 });
   await page.waitForTimeout(800);
 }
@@ -22,7 +22,7 @@ test.describe("deletion desktop", () => {
   test.use({ viewport: { width: 1440, height: 900 } });
 
   test("queue while scanning: apply waits for the scan", async ({ page }) => {
-    await page.goto("/viewer.html?demo&scan=/Users/alex");
+    await page.goto("/viewer.html?demo&os=mac&scan=/Users/alex");
     await expect(row(page, "Projects")).toBeVisible({ timeout: 30_000 });
     await row(page, "Projects").click({ button: "right" });
     await page.getByRole("menuitem", { name: "Add to deletion queue" }).click();
@@ -96,7 +96,7 @@ test.describe("deletion desktop", () => {
   });
 
   test("declined on the host", async ({ page }) => {
-    await page.goto("/viewer.html?demo&scan=/Users/alex&approve=no");
+    await page.goto("/viewer.html?demo&os=mac&scan=/Users/alex&approve=no");
     await expect(page.getByRole("button", { name: "Scan again" })).toBeVisible({ timeout: 120_000 });
     await row(page, "Projects").click({ button: "right" });
     await page.getByRole("menuitem", { name: "Move to Trash now…" }).click();
