@@ -242,7 +242,7 @@ describe("TreeStore", () => {
 
   test("synthetic remainder is a child of the root, not part of its total", () => {
     const s = new TreeStore();
-    s.reset({ ...started(), path: "/", rootName: "Macintosh HD" });
+    s.reset({ ...started(), path: "/", rootName: "/" });
     feed(s, [dir(0, { ownAlloc: 1000 })]);
     s.setSynthetic(500);
     const kids: number[] = [];
@@ -251,10 +251,10 @@ describe("TreeStore", () => {
     expect(s.size(0)).toBe(1000);
   });
 
-  test.each(["darwin", "linux"] as const)("mock stream respects protocol invariants and settles exactly (%s)", (os) => {
-    const g = generateTree(6000, { root: "volume", os });
+  test("mock stream respects protocol invariants and settles exactly", () => {
+    const g = generateTree(6000, { root: "root" });
     const s = new TreeStore();
-    s.reset({ ...started(), path: "/", rootName: "Macintosh HD" });
+    s.reset({ ...started(), path: "/", rootName: "/" });
     const seen = new Set<number>([0]);
     let more = 0;
     for (const r of g.records) {

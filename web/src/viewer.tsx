@@ -63,9 +63,7 @@ function boot(): void {
   let session: Session;
   if (demo) {
     const approve = params.get("approve");
-    // The demo plays a Linux server unless ?os=mac asks for the MacBook.
-    const os = /^(mac|macos|darwin)$/i.test(params.get("os") ?? "") ? "darwin" : "linux";
-    session = new MockSession({ demoState: params.get("state"), autoScan: params.get("scan"), approve: approve === "no" ? "no" : approve ? Number(approve) : undefined, os });
+    session = new MockSession({ demoState: params.get("state"), autoScan: params.get("scan"), approve: approve === "no" ? "no" : approve ? Number(approve) : undefined });
   } else {
     const m = /^\/s\/([A-Za-z0-9_-]{8,64})\/?$/.exec(path);
     const sid = m?.[1] ?? "";

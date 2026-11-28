@@ -27,7 +27,7 @@ for (const vp of VIEWPORTS) {
     });
 
     test("viewer flow", async ({ page }) => {
-      await page.goto("/viewer.html?demo&os=mac");
+      await page.goto("/viewer.html?demo");
       await expect(page.getByRole("heading", { name: "Choose what to scan" })).toBeVisible();
       await page.waitForTimeout(900);
       await shot(page, `${vp.tag}-picker`);
@@ -75,8 +75,8 @@ test.describe("states", () => {
     await shot(page, "state-missing-key");
   });
   test("volume scan", async ({ page }) => {
-    await page.goto("/viewer.html?demo&os=mac");
-    await page.getByRole("button", { name: /^Macintosh HD/ }).click();
+    await page.goto("/viewer.html?demo");
+    await page.getByRole("button", { name: /^\/, / }).click();
     await expect(page.getByRole("button", { name: "Scan again" })).toBeVisible({ timeout: 150_000 });
     await page.waitForTimeout(1200);
     await shot(page, "desktop-volume-done");
