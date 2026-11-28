@@ -174,7 +174,7 @@ function itemHue(store: TreeStore, node: number, inherited: number, dirOrdinal: 
 /**
  * Branch hue for a dir directly under the zoom root: its position in the
  * parent's announced child list. Unlike size rank this never changes while a
- * scan streams in, so branches keep their colour from first paint to done.
+ * scan streams in, so branches keep their color from first paint to done.
  */
 export function dirHue(store: TreeStore, node: number): number {
   const p = store.parent[node];

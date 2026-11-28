@@ -72,7 +72,7 @@ type App struct {
 
 	guiElevated bool
 
-	emitMu sync.Mutex // serialises emits so snapshots arrive in order
+	emitMu sync.Mutex // serializes emits so snapshots arrive in order
 
 	mu           sync.Mutex
 	ctx          context.Context

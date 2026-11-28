@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 //
-// Mineral parcel palette. Everything is precomputed into CSS colour strings so
+// Mineral parcel palette. Everything is precomputed into CSS color strings so
 // the draw loop only assigns existing string references (no per-frame allocs).
 
 export const PETROL0 = "#0D2A31";
@@ -68,7 +68,7 @@ export interface Palette {
   body: string[][];
   /** dark under-fill for hatched bucket parcels */
   bucketBase: string[][];
-  /** hatch line colour */
+  /** hatch line color */
   hatch: string[];
   /** text on a parcel */
   ink: string;
@@ -102,7 +102,7 @@ function build(): Palette {
 
 export const PALETTE = build();
 
-/** css colour of a hue at a depth (list bars, legend) */
+/** css color of a hue at a depth (list bars, legend) */
 export function hueCss(hue: number, depth = 0): string {
   return PALETTE.leaf[hue % HUES.length][Math.min(depth, MAX_DEPTH)];
 }
