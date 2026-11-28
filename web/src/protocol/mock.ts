@@ -9,12 +9,16 @@
 // and SCAN_DONE with denied counts, and supports cancel, browse and dirFiles.
 // Deletion requests run the whole flow (preparing, awaiting approval "on the
 // host", running, DELETED + done). Each profile has one realistic failure so
-// the partial-result dialog can be seen too: on Linux, anything inside the
-// overlay2 layer of a running container fails with "busy"; on the Mac, items
-// under ~/Library/Containers fail with "denied".
+// the partial-result dialog can be seen too: on Linux, /opt/acme-agent/var/
+// queue.db is immutable (chattr +i), so deleting it fails with "permission"
+// and its folders come back "partial"; on the Mac, items under
+// ~/Library/Containers fail with "denied". The Linux profile also mirrors the
+// real agent's "protected" refusals (system roots, home folders, mount points
+// and every folder above one, e.g. the overlay2 dirs of running containers).
 
 import type { AgentInfo, BrowseResult, ChildRec, ConnState, DeletedItem, DeleteReq, DeleteResult, DeleteStatus, DirFiles, DirRec, FileRec, NodeRecord, ScanOptions, Session, SessionEvents, Volume } from "./types";
 import { CHILD_FLAG, DIR_FLAG, PROTO_VERSION } from "./types";
+import { isProtectedPath } from "../ui/deletion";
 
 export interface MockOptions {
   /** approximate number of dirs in a full scan */
@@ -110,7 +114,9 @@ const DEB_PKGS = "linux-image-6.8.0-45-generic linux-modules-6.8.0-45-generic li
 const LAYER_MEDIAN = 300 * MB;
 /** json.log size of each of the seven containers, GB; the busiest first */
 const CONTAINER_LOG_GB = [10, 5, 2.2, 1.0, 0.5, 0.3, 0.2];
-const CRASH_PROCS = "usr_bin_node usr_lib_postgresql_16_bin_postgres usr_bin_python3.12 usr_sbin_nginx".split(" ");
+const CRASH_PROCS = "node postgres python3 nginx".split(" ");
+const LSYS_LIBS = "LLVM icudata clang-cpp python3.12 stdc++ crypto gtk-3".split(" ");
+const LSYS_SHARE = "locale-archive icudt74l.dat mime.cache fonts.pack terminfo.db".split(" ");
 
 // ---- dir kinds ---------------------------------------------------------------------
 enum K {
@@ -194,6 +200,7 @@ class Gen {
   denied = 0;
   /** children announced as other-device mounts (pseudo filesystems, separate volumes) */
   skipped = 0;
+  mountAbove = new Uint8Array(0);
   readonly linux: boolean;
   folds: { id: number; left: number }[] = [];
   totals = { dirs: 0, files: 0, alloc: 0, apparent: 0 };
@@ -207,6 +214,7 @@ class Gen {
     const cap = target + 4096;
     this.kind = new Uint8Array(cap);
     this.depth = new Uint8Array(cap);
+    this.mountAbove = new Uint8Array(cap);
     this.parent = new Int32Array(cap);
     this.ownAlloc = new Float64Array(cap);
     this.ownApparent = new Float64Array(cap);
@@ -344,7 +352,10 @@ class Gen {
     for (let i = 0; i < indiv.length && files.length < 8; i++) {
       const [nm, s] = indiv[i];
       if (s < MB) break;
-      const name = nm || this.fileName(prof);
+      let name = nm || this.fileName(prof);
+      // names are unique per folder: delete targeting finds the first match
+      for (let t = 0; t < 5 && files.some((f) => f.name === name); t++) name = nm ? name : this.fileName(prof);
+      if (files.some((f) => f.name === name)) continue;
       files.push({ name, alloc: Math.ceil(s / 4096) * 4096, apparent: s, flags: 0 });
     }
     if (files.length) this.listed.set(id, files);
@@ -368,17 +379,19 @@ class Gen {
       this.parent[cid] = id;
       this.names[cid] = k.name;
       if (k.extra) this.extra[cid] = k.extra;
-      if (k.flags && k.flags & CHILD_FLAG.OTHER_DEVICE) this.skipped++;
+      if (k.flags && k.flags & CHILD_FLAG.OTHER_DEVICE) {
+        this.skipped++;
+        for (let n = id; n >= 0 && !this.mountAbove[n]; n = this.parent[n]) this.mountAbove[n] = 1;
+      }
       dirs.push({ name: k.name, flags: k.flags ?? 0 });
       if (!k.flags) this.pool.push(cid);
     }
     return { k: 1, id, flags, ownAlloc: this.ownAlloc[id], ownApparent: this.ownApparent[id], ownFiles: this.ownFiles[id], entryErrors: 0, totalDirs: dirs.length, firstChildId: dirs.length ? first : 0, dirs, files };
   }
 
-  /** a dir inside the overlay2 layer of a running container (its files are in use) */
-  inLiveLayer(id: number): boolean {
-    for (let n = id; n > 0; n = this.parent[n]) if (this.kind[n] === K.LLayer) return this.extra[n] === "live";
-    return false;
+  /** the dir is a mount point's ancestor: some descendant was announced as another device */
+  holdsMount(id: number): boolean {
+    return this.mountAbove[id] === 1;
   }
 
   fileName(p: FileProfile): string {
@@ -393,7 +406,8 @@ class Gen {
     else if (p === P.pgrel || p === P.pgrel2) return String(g.int(16384, 99999)) + (g.next() < 0.8 ? "." + g.int(1, 9) : "");
     else if (p === P.journal) return `system@${g.hex(32)}-${g.hex(16)}-${g.hex(16)}.journal`;
     else if (p === P.deb) return `${g.pick(DEB_PKGS)}_${g.int(1, 9)}.${g.int(0, 40)}.${g.int(0, 9)}-0ubuntu${g.int(1, 4)}_amd64.deb`;
-    else if (p === P.crash) return `_${g.pick(CRASH_PROCS)}.${g.pick([0, 33, 70, 1000])}.crash`;
+    // systemd-coredump style: the random id and pid keep names unique per folder
+    else if (p === P.crash) return `core.${g.pick(CRASH_PROCS)}.${g.pick([0, 33, 70, 1000])}.${g.hex(32)}.${g.int(1000, 99999)}.${1750000000 + g.int(0, 12_000_000)}.zst`;
     else if (p === P.dump) return `app-prod-2025-${String(g.int(1, 12)).padStart(2, "0")}-${String(g.int(1, 28)).padStart(2, "0")}.sql.gz`;
     else if (p === P.upload) base = `${g.hex(8)}-${g.pick(["avatar", "scan", "receipt", "banner", "export"])}`;
     else if (p === P.downloads) base = g.pick(["Install ", "invoice-", "Screenshot 2025-", "statement-", "export-", "dataset-", "recording-", "slides-"]) + g.int(1, 400);
@@ -675,9 +689,9 @@ class Gen {
         const n = Math.max(0, Math.round((depth < 3 ? 8 : 5) - depth * 0.8 + g.normal() * 1.4));
         const kids = many(n, () => k(g.pick(LSYS_NAMES), K.LSys));
         if (depth === 2 && nm === "lib")
-          return [kids, withBig(P.lsys, () => Array.from({ length: 7 }, (): [string, number] => [`lib${g.pick(["LLVM", "icudata", "clang-cpp", "python3.12", "stdc++", "crypto", "gtk-3"])}.so.${g.int(1, 19)}`, g.logNormal(110 * MB, 0.6)]))];
+          return [kids, withBig(P.lsys, () => Array.from({ length: 7 }, (_, j): [string, number] => [`lib${LSYS_LIBS[j]}.so.${g.int(1, 19)}`, g.logNormal(110 * MB, 0.6)]))];
         if (depth === 2 && nm === "share")
-          return [kids, withBig(P.lsys, () => Array.from({ length: 5 }, (): [string, number] => [g.pick(["locale-archive", "icudt74l.dat", "mime.cache", "fonts.pack", "terminfo.db"]) + "." + g.hex(3), g.logNormal(70 * MB, 0.7)]))];
+          return [kids, withBig(P.lsys, () => Array.from({ length: 5 }, (_, j): [string, number] => [LSYS_SHARE[j] + "." + g.hex(3), g.logNormal(70 * MB, 0.7)]))];
         return [kids, P.lsys];
       }
       case K.LVar:
@@ -687,7 +701,7 @@ class Gen {
       case K.LDocker:
         return [[k("overlay2", K.LOverlay), k("containers", K.LContainers), k("volumes", K.LVolumes), k("image", K.Generic), k("buildkit", K.Generic), k("network", K.Generic), k("tmp", K.LEmpty), k("plugins", K.LEmpty)], P.ltiny];
       case K.LOverlay:
-        // the first few layers belong to running containers (mounted at merged/): deleting them is "busy"
+        // the first few layers belong to running containers: their merged/ dirs are overlay mounts, so the agent refuses to delete the layers (and everything above them)
         return [[...many(g.int(34, 42), (i) => k(g.hex(64), K.LLayer, undefined, i < 6 ? "live" : undefined)), k("l", K.LEmpty)], P.none];
       case K.LLayer:
         return [[k("diff", K.LDiff), k("work", K.LEmpty), ...(this.extra[id] === "live" ? [k("merged", K.LEmpty, OTHER)] : [])], P.ltiny];
@@ -700,7 +714,12 @@ class Gen {
         return [kids, P.ltiny];
       }
       case K.LLayerUsr:
-        return [many(g.int(2, 4), () => k(g.pick(["lib", "share", "local", "bin", "src", "include"]), K.LGen)), withBig({ ...P.layer, n: [0, 6] }, () => Array.from({ length: g.int(1, 2) }, (): [string, number] => [g.pick(LAYER_BIGS), g.logNormal(LAYER_MEDIAN, 1.0)]))];
+        return [many(g.int(2, 4), () => k(g.pick(["lib", "share", "local", "bin", "src", "include"]), K.LGen)), withBig({ ...P.layer, n: [0, 6] }, () => {
+          // one or two big files; a second one never repeats the first name
+          const a = g.int(0, LAYER_BIGS.length - 1);
+          const names = [LAYER_BIGS[a], ...(g.next() < 0.5 ? [LAYER_BIGS[(a + g.int(1, LAYER_BIGS.length - 1)) % LAYER_BIGS.length]] : [])];
+          return names.map((n): [string, number] => [n, g.logNormal(LAYER_MEDIAN, 1.0)]);
+        })];
       case K.LGen:
         if (nm === "app" && depth === 7) return [[k("node_modules", K.NodeModules), k("dist", K.Src)], P.layer];
         return [depth >= 12 ? [] : many(g.int(0, 3), () => k(g.pick(LDIFF_NAMES), K.LGen)), P.layer];
@@ -789,8 +808,12 @@ const DEMO_VOLUMES: Volume[] = [
   { path: "/Volumes/Shared", label: "Shared", fs: "smbfs", total: 3_998_000_000_000, free: 1_102_000_000_000, used: 2_896_000_000_000, kind: "network", readOnly: false },
 ];
 
+/** where root's Trash keeps deleted files (what the agent reports as DeleteStatus.where) */
+const LINUX_TRASH_DIR = "/root/.local/share/Trash/files";
+
 const LINUX_VOLUMES: Volume[] = [
   { path: "/", label: "/", fs: "ext4", total: 214_748_364_800, free: 15_000_000_000, used: 197_600_000_000, kind: "boot", readOnly: false },
+  { path: "/boot/efi", label: "efi", fs: "vfat", total: 535_822_336, free: 529_500_000, used: 6_322_336, kind: "internal", readOnly: false },
   { path: "/data", label: "data", fs: "xfs", total: 536_870_912_000, free: 208_400_000_000, used: 328_470_912_000, kind: "internal", readOnly: false },
   { path: "/mnt/backup", label: "backup", fs: "nfs4", total: 4_000_000_000_000, free: 1_460_000_000_000, used: 2_540_000_000_000, kind: "network", readOnly: false },
 ];
@@ -1039,7 +1062,9 @@ export class MockSession implements Session {
           left -= a;
           usedA += a;
           usedP += a * 0.93;
-          files.push({ name: g.fileName(prof), alloc: a, apparent: Math.round(a * 0.93), flags: 0 });
+          let name = g.fileName(prof);
+          for (let t = 0; t < 5 && files.some((f) => f.name === name); t++) name = g.fileName(prof);
+          files.push({ name, alloc: a, apparent: Math.round(a * 0.93), flags: 0 });
         }
         files.sort((a, b) => b.alloc - a.alloc);
         res({ reqId, scanId, dirId, flags: 0, restCount: Math.max(0, nFiles - files.length), restAlloc: Math.max(0, own - usedA), restApparent: Math.max(0, ownApp - usedP), files });
@@ -1100,14 +1125,30 @@ export class MockSession implements Session {
       if (i >= items.length || d.stop) {
         for (let k = i; k < items.length; k++) results.push({ i: k, ok: false, code: "canceled", freedAlloc: 0, files: 0, dirs: 0 });
         if (deleted.length) ev.deleted({ scanId: d.req.scanId, job: d.job, items: deleted });
-        finish({ state: "done", done: i, freedAlloc: freed, current: undefined, results });
+        // like the real agent on Linux: report where the Trash put things
+        const trashed = this.linux && d.req.mode === "trash" && results.some((r) => r.ok);
+        finish({ state: "done", done: i, freedAlloc: freed, current: undefined, results, ...(trashed ? { where: LINUX_TRASH_DIR } : {}) });
         return;
       }
       const it = items[i];
       const path = cur(i);
-      const inUse = g.linux && g.inLiveLayer("dir" in it ? it.dir : it.parent);
-      if (inUse) {
-        results.push({ i, ok: false, code: "busy", freedAlloc: 0, files: 0, dirs: 0 });
+      const mountAbove = "dir" in it && g.holdsMount(it.dir);
+      const varId = g.linux ? g.kind.indexOf(K.LVendorVar, 1) : -1;
+      const imm = varId > 0 ? g.listed.get(varId)?.find((f) => f.name === "queue.db") : undefined;
+      let holdsImm = false;
+      if ("dir" in it && varId > 0) for (let n = varId; n > 0 && !holdsImm; n = g.parent[n]) holdsImm = n === it.dir;
+      if (g.linux && "dir" in it && (mountAbove || isProtectedPath(path, this.info))) {
+        // system roots, home folders, mount points and every folder above one
+        results.push({ i, ok: false, code: "protected", freedAlloc: 0, files: 0, dirs: 0 });
+      } else if (g.linux && imm && "name" in it && it.parent === varId && it.name === "queue.db") {
+        // immutable file (chattr +i): unlink fails with EPERM
+        results.push({ i, ok: false, code: "permission", freedAlloc: 0, files: 0, dirs: 0 });
+      } else if (g.linux && imm && holdsImm && "dir" in it) {
+        // everything but the immutable file goes
+        const a = tot.alloc[it.dir] - imm.alloc, ap = tot.apparent[it.dir] - imm.apparent, fl = tot.files[it.dir] - 1;
+        freed += a;
+        results.push({ i, ok: false, code: "partial", message: "queue.db: operation not permitted", freedAlloc: a, files: fl, dirs: tot.dirs[it.dir] });
+        deleted.push({ dir: it.dir, partial: true, freedAlloc: a, freedApparent: ap, files: fl, dirs: tot.dirs[it.dir] });
       } else if (/\/Library\/Containers(\/|$)/.test(path)) {
         results.push({ i, ok: false, code: "denied", freedAlloc: 0, files: 0, dirs: 0 });
       } else if ("dir" in it) {

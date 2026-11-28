@@ -65,6 +65,9 @@ export function wireItem(st: TreeStore, n: number): DeleteItem | null {
 // ---- protected folders ---------------------------------------------------------------
 
 const UNIX_SYSTEM = ["/", "/Users", "/home", "/root", "/var/root", "/System", "/Library", "/Applications", "/usr", "/bin", "/sbin", "/etc", "/var", "/private", "/opt", "/dev", "/cores", "/Volumes"];
+// mirrors internal/scan/protected_linux.go
+const LINUX_SYSTEM = ["/", "/bin", "/boot", "/dev", "/etc", "/home", "/lib", "/lib32", "/lib64", "/libx32", "/media", "/mnt", "/opt", "/proc", "/root", "/run", "/sbin", "/snap", "/srv", "/sys", "/tmp", "/usr", "/var", "/var/tmp"];
+const LINUX_HOME_DIRS = ["Desktop", "Documents", "Downloads", "Music", "Pictures", "Public", "Templates", "Videos", ".config", ".local", ".local/share", ".local/share/Trash"];
 const UNIX_HOME_DIRS = ["Library", "Documents", "Desktop", "Downloads", "Pictures", "Movies", "Music", "Public", "Applications", ".Trash"];
 const WIN_HOME_DIRS = ["AppData", "Documents", "Desktop", "Downloads", "Pictures", "Videos", "Music", "OneDrive"];
 const WIN_SYSTEM = /^[a-z]:\\(windows|program files[^\\]*|programdata|\$recycle\.bin|system volume information|users)$/;
@@ -95,6 +98,18 @@ export function isProtectedPath(path: string, info: Pick<AgentInfo, "os" | "home
     if (WIN_SYSTEM.test(p)) return true;
     const m = /^[a-z]:\\users\\[^\\]+(?:\\([^\\]+))?$/.exec(p);
     if (m && (!m[1] || WIN_HOME_DIRS.some((d) => d.toLowerCase() === m[1]))) return true;
+  } else if (info.os === "linux") {
+    // system roots, every home (/root, /home/<user>) with its standard folders; volume roots are in `fixed`
+    if (LINUX_SYSTEM.includes(p)) return true;
+    const m = /^\/home\/[^/]+(?:\/(.+))?$/.exec(p);
+    if (m && (!m[1] || LINUX_HOME_DIRS.includes(m[1]))) return true;
+    for (const h of [info.home, "/root"]) {
+      if (h && p.startsWith(h + "/") && LINUX_HOME_DIRS.includes(p.slice(h.length + 1))) return true;
+    }
+    // ancestors of a protected home folder (e.g. ~/.local)
+    for (const h of [info.home, "/root"]) {
+      if (h && LINUX_HOME_DIRS.some((d) => (h + "/" + d).startsWith(p + "/"))) return true;
+    }
   } else {
     if (UNIX_SYSTEM.some((s) => norm(s, false, fold) === p)) return true;
     const m = /^(?:\/users|\/home)\/[^/]+(?:\/([^/]+))?$/i.exec(p);
@@ -140,6 +155,8 @@ export function nodeReason(st: TreeStore, n: number, info: AgentInfo | null): st
   if (!st.hasRecord(n)) return "Not scanned yet";
   if (df & DIR_FLAG.VANISHED) return "Already gone";
   if (info && isProtectedPath(st.fullPath(n), info)) return "Protected folder (its contents can be deleted)";
+  // the agent also refuses every mount point and every folder above one
+  if (hasOtherVolume(st, n)) return "Protected folder: it holds another volume (its contents can be deleted)";
   return null;
 }
 
