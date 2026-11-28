@@ -329,6 +329,14 @@
 .sees > div:last-child li::before {
   background: var(--sodium);
 }
+.facts {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 28px 32px;
+}
+.facts p {
+  margin: 0;
+}
 .fine {
   font-size: 14.5px !important;
 }
@@ -403,7 +411,8 @@
   .cmd {
     font-size: 13px;
   }
-  .sees {
+  .sees,
+  .facts {
     grid-template-columns: 1fr;
     gap: 16px;
   }

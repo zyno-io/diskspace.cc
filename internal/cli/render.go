@@ -194,7 +194,7 @@ func (r *Renderer) Link(url, local string) {
 	fmt.Fprintln(w)
 	if url != "" {
 		if first {
-			fmt.Fprintln(w, "Open this link in your browser:")
+			fmt.Fprintln(w, "Open this link in a browser on any device:")
 		} else {
 			fmt.Fprintln(w, "New link:")
 		}
