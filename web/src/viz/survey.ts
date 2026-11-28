@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 //
-// Motion 1, "survey grid": a ghost treemap of thin contour-coloured lot lines
+// Motion 1, "survey grid": a ghost treemap of thin contour-colored lot lines
 // that keeps subdividing itself (one cut every ~600 ms) and slowly re-forms by
-// merging old cuts away. Normalised coordinates, so resizes are free.
+// merging old cuts away. Normalized coordinates, so resizes are free.
 
 interface Cell {
   x: number;

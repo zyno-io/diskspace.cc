@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 //
 // Canvas2D treemap renderer. Imperative on purpose: layout lives in typed
-// arrays, colours are precomputed strings, label fits are cached per layout,
+// arrays, colors are precomputed strings, label fits are cached per layout,
 // and the frame loop only runs while something is moving (tween or zoom).
 
 import { DIR_FLAG } from "../protocol/types";
@@ -71,7 +71,7 @@ interface Scene {
   labelW: Float32Array;
   sub: (string | null)[];
   subW: Float32Array;
-  order: Int32Array; // labelled items sorted by font
+  order: Int32Array; // labeled items sorted by font
   nLabels: number;
 }
 

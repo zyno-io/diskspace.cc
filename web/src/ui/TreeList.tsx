@@ -530,7 +530,7 @@ function Legend() {
     ["Apps", 7],
   ];
   return (
-    <div class="legend" aria-label="File colours">
+    <div class="legend" aria-label="File colors">
       {cats.map(([n, h]) => (
         <span key={n}>
           <i style={{ background: hueCss(h, 0) }} />

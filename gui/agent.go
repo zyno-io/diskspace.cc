@@ -28,7 +28,7 @@ const (
 
 // handle is a started child. exited is closed when the process is known to
 // have exited; it is nil (and kill too) for the macOS admin child, which runs
-// as root under osascript and can't be waited on or signalled by us. That
+// as root under osascript and can't be waited on or signaled by us. That
 // child still exits within a second of the IPC connection closing, and polls
 // --parent-pid.
 type handle struct {
